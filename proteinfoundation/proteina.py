@@ -523,6 +523,9 @@ class Proteina(L.LightningModule):
         fn_predict_for_sampling = partial(
             self.predict_for_sampling, n_recycle=self.inf_cfg.get("n_recycle", 0)
         )
+
+        dual_path_alpha = self.inf_cfg.args.get("dual_path_alpha", 0.0)
+        
         gen_samples, extra_info = self.fm.full_simulation(
             batch=batch,
             predict_for_sampling=fn_predict_for_sampling,
@@ -535,6 +538,7 @@ class Proteina(L.LightningModule):
             save_trajectory_every=save_trajectory_every,
             guidance_w=guidance_w,
             ag_ratio=ag_ratio,
+            dual_path_alpha=dual_path_alpha, # new
         )
         # Dict with the data_modes as keys, and values with batch shape b
         # extra_info is a dict with additional things, including
@@ -554,8 +558,24 @@ class Proteina(L.LightningModule):
             generation_list.append(
                 (sample_prots["coors"][i], sample_prots["residue_type"][i])
             )  # Tuple (coors [n, 37, 3], aatype [n])
-        return generation_list  # List of tupes (coors [n, 37, 3], aatype [n])
 
+
+
+        # Dual path
+
+        if dual_path_alpha > 0.0 and extra_info.get("x_B") is not None:
+            sample_prots_B = self.sample_formatting(
+                x=extra_info["x_B"],
+                extra_info=extra_info,
+                ret_mode="coors37_n_aatype",
+            )
+            for i in range(sample_prots_B["coors"].shape[0]):
+                generation_list.append(
+                    (sample_prots_B["coors"][i], sample_prots_B["residue_type"][i])
+                )
+        
+        return generation_list  # List of tupes (coors [n, 37, 3], aatype [n])
+        
     def sample_formatting(
         self,
         x: Dict[str, Tensor],
