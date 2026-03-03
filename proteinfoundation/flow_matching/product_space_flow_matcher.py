@@ -737,7 +737,6 @@ class ProductSpaceFlowMatcher(L.LightningModule):
                 "mask": mask,
                 "x_B": x_B if dual_path_enabled else None,  # <-- ДОБАВИТЬ
             }
-            }
             return x, additional_info
 
 
