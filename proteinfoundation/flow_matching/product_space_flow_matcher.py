@@ -515,6 +515,7 @@ class ProductSpaceFlowMatcher(L.LightningModule):
         save_trajectory_every: int = 0,
         guidance_w: float = 1.0,
         ag_ratio: float = 0.0,
+        dual_path_alpha: float = 0.0,
     ) -> Dict[str, Tensor]:
         """
         Generates samples by simulating the
@@ -603,6 +604,23 @@ class ProductSpaceFlowMatcher(L.LightningModule):
                 mask=mask,
             )
 
+            # Second path initialization
+            
+            dual_path_enabled = dual_path_alpha > 0.0
+            if dual_path_enabled:
+                x_B = self.sample_noise(
+                    n,
+                    shape=(nsamples,),
+                    device=device,
+                    mask=mask,
+                )
+                x_1_pred_B = None
+                if "motif_mask" in batch:
+                    # motif_mask: [b, n, 37] -> scaffold_mask: [b, n]
+                    scaffold_mask = ~batch["motif_mask"].any(dim=-1)
+                else:
+                    scaffold_mask = mask.bool()
+
             for step in range(nsteps):
                 t = {
                     data_mode: ts[data_mode][step] * torch.ones(nsamples, device=device)
@@ -640,8 +658,55 @@ class ProductSpaceFlowMatcher(L.LightningModule):
                 x_1_pred = self.nn_out_to_clean_sample_prediction(
                     batch=batch, nn_out=nn_out
                 )
-                # Dict[data_mode, torch.Tensor]
 
+                # Second path generation
+
+                if dual_path_enabled:
+                    batch_B = batch.copy()
+                    batch_B["x_t"] = x_B
+                    if step > 0 and self_cond:
+                        batch_B["x_sc"] = x_1_pred_B # the same as for x_1_pred
+
+                    nn_out_B = self.get_clean_pred_n_guided_vector(
+                        batch=batch_B,
+                        predict_for_sampling=predict_for_sampling,
+                        guidance_w=guidance_w,
+                        ag_ratio=ag_ratio,
+                    )
+                    x_1_pred_B = self.nn_out_to_clean_sample_prediction(
+                        batch=batch_B, nn_out=nn_out_B
+                    )
+
+                    # Mixing x1_pred only in scaffold positions
+                    
+                    sm = scaffold_mask[..., None] # scaffold_mask: [b, n] -> [b, n, 1]
+                    
+                    for data_mode in self.data_modes:
+                        x1_mix = (
+                            dual_path_alpha * x_1_pred[data_mode]
+                            + (1.0 - dual_path_alpha) * x_1_pred_B[data_mode]
+                        )
+
+                        x_1_pred[data_mode] = torch.where(
+                            sm, x1_mix, x_1_pred[data_mode]
+                        )
+                        x_1_pred_B[data_mode] = x_1_pred[data_mode].clone()
+
+                        # Recompute v for x_1_pred_mix A and B
+                        
+                        t_val = t[data_mode][..., None, None]  # [b, 1, 1]
+                        v_mix = (x_1_pred[data_mode] - x[data_mode]) / (1.0 - t_val + 1e-5)
+                        nn_out[data_mode]["v"] = v_mix * mask[..., None]
+                        if "v_guided" in nn_out[data_mode]:
+                            nn_out[data_mode]["v_guided"] = nn_out[data_mode]["v"]
+
+                        v_mix_B = (x_1_pred_B[data_mode] - x_B[data_mode]) / (1.0 - t_val + 1e-5)
+                        nn_out_B[data_mode]["v"] = v_mix_B * mask[..., None]
+                        if "v_guided" in nn_out_B[data_mode]:
+                            nn_out_B[data_mode]["v_guided"] = nn_out_B[data_mode]["v"]
+                
+                
+                # Dict[data_mode, torch.Tensor]
                 simulation_step_params = {
                     data_mode: sampling_model_args[data_mode]["simulation_step_params"]
                     for data_mode in self.data_modes
@@ -655,6 +720,18 @@ class ProductSpaceFlowMatcher(L.LightningModule):
                     mask=mask,
                     simulation_step_params=simulation_step_params,
                 )
+
+                # For second protein
+                if dual_path_enabled:
+                    x_B = self.simulation_step(
+                        x_t=x_B,
+                        nn_out=nn_out_B,
+                        t=t,
+                        dt=dt,
+                        gt=gt_step,
+                        mask=mask,
+                        simulation_step_params=simulation_step_params,
+                    )
 
             additional_info = {
                 "mask": mask,
