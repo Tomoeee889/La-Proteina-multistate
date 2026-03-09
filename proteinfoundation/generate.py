@@ -316,24 +316,44 @@ def save_motif_predictions(
     motif_pdb_name: str = None,
 ) -> None:
     predictions = [sample for sublist in predictions for sample in sublist]
-    print([(p[0].shape, p[1].shape) for p in predictions])
     samples_per_length = defaultdict(int)
     for j, pred in enumerate(predictions):
-        coors_atom37, residue_type = pred  # [n, 37, 3] and [n]
+        dual_path = len(pred) == 4
+
+        coors_atom37, residue_type = pred[0], pred[1]
         n = coors_atom37.shape[-3]
+
         dir_name = f"job_{job_id}_id_{j}_motif_{motif_pdb_name}"
         samples_per_length[n] += 1
         sample_root_path = os.path.join(root_path, dir_name)
-        os.makedirs(sample_root_path, exist_ok=False)
-        fname = dir_name + ".pdb"
-        pdb_path = os.path.join(sample_root_path, fname)
+        os.makedirs(sample_root_path, exist_ok=True)
+
+        # Saving path A
+        if dual_path:
+            fname_A = dir_name + "_pathA.pdb"
+        else:
+            fname_A = dir_name + ".pdb"
+        pdb_path_A = os.path.join(sample_root_path, fname_A)
         write_prot_to_pdb(
             prot_pos=coors_atom37.float().detach().cpu().numpy(),
             aatype=residue_type.detach().cpu().numpy(),
-            file_path=pdb_path,
+            file_path=pdb_path_A,
             overwrite=True,
             no_indexing=True,
         )
+
+        # Saving path B 
+        if dual_path:
+            coors_atom37_B, residue_type_B = pred[2], pred[3]
+            fname_B = dir_name + "_pathB.pdb"
+            pdb_path_B = os.path.join(sample_root_path, fname_B)
+            write_prot_to_pdb(
+                prot_pos=coors_atom37_B.float().detach().cpu().numpy(),
+                aatype=residue_type_B.detach().cpu().numpy(),
+                file_path=pdb_path_B,
+                overwrite=True,
+                no_indexing=True,
+            )
 
 
 def main():
