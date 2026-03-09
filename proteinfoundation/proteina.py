@@ -554,25 +554,24 @@ class Proteina(L.LightningModule):
         # shapes [b, n, 37, 3], [b, n], [b, n]
 
         generation_list = []
-        for i in range(sample_prots["coors"].shape[0]):
-            generation_list.append(
-                (sample_prots["coors"][i], sample_prots["residue_type"][i])
-            )  # Tuple (coors [n, 37, 3], aatype [n])
-
-
-
-        # Dual path
-
         if dual_path_alpha > 0.0 and extra_info.get("x_B") is not None:
             sample_prots_B = self.sample_formatting(
-                x=extra_info["x_B"],
-                extra_info=extra_info,
-                ret_mode="coors37_n_aatype",
+            x=extra_info["x_B"],
+            extra_info=extra_info,
+            ret_mode="coors37_n_aatype",
             )
-            for i in range(sample_prots_B["coors"].shape[0]):
+            for i in range(sample_prots["coors"].shape[0]):
+                generation_list.append((
+                    sample_prots["coors"][i],
+                    sample_prots["residue_type"][i],
+                    sample_prots_B["coors"][i],
+                    sample_prots_B["residue_type"][i],
+                    ))
+        else:
+            for i in range(sample_prots["coors"].shape[0]):
                 generation_list.append(
-                    (sample_prots_B["coors"][i], sample_prots_B["residue_type"][i])
-                )
+                    (sample_prots["coors"][i], sample_prots["residue_type"][i])
+                    )
         
         return generation_list  # List of tupes (coors [n, 37, 3], aatype [n])
         
