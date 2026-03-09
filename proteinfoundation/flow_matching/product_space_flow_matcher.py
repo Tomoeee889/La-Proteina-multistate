@@ -678,30 +678,24 @@ class ProductSpaceFlowMatcher(L.LightningModule):
                     )
 
                     # Mixing x1_pred only in scaffold positions
-                    
-                    sm = scaffold_mask[..., None] # scaffold_mask: [b, n] -> [b, n, 1]
-                    
+                    sm = scaffold_mask[..., None]
                     for data_mode in self.data_modes:
-                        x1_mix = (
-                            dual_path_alpha * x_1_pred[data_mode]
-                            + (1.0 - dual_path_alpha) * x_1_pred_B[data_mode]
-                        )
+    
+                        orig_A = x_1_pred[data_mode]
+                        orig_B = x_1_pred_B[data_mode]
 
-                        x_1_pred[data_mode] = torch.where(
-                            sm, x1_mix, x_1_pred[data_mode]
-                        )
-                        x_1_pred_B[data_mode] = x_1_pred[data_mode].clone()
+                        x1_mix_A = dual_path_alpha * orig_A + (1.0 - dual_path_alpha) * orig_B
+                        x1_mix_B = dual_path_alpha * orig_B + (1.0 - dual_path_alpha) * orig_A
 
-                        # Recompute v for x_1_pred_mix A and B
-                        
-                        t_val = t[data_mode][..., None, None]  # [b, 1, 1]
-                        v_mix = (x_1_pred[data_mode] - x[data_mode]) / (1.0 - t_val + 1e-5)
-                        nn_out[data_mode]["v"] = v_mix * mask[..., None]
+                        x_1_pred[data_mode] = torch.where(sm, x1_mix_A, orig_A)
+                        x_1_pred_B[data_mode] = torch.where(sm, x1_mix_B, orig_B)
+
+                        t_val = t[data_mode][..., None, None]
+                        nn_out[data_mode]["v"] = (x_1_pred[data_mode] - x[data_mode]) / (1.0 - t_val + 1e-5) * mask[..., None]
                         if "v_guided" in nn_out[data_mode]:
                             nn_out[data_mode]["v_guided"] = nn_out[data_mode]["v"]
 
-                        v_mix_B = (x_1_pred_B[data_mode] - x_B[data_mode]) / (1.0 - t_val + 1e-5)
-                        nn_out_B[data_mode]["v"] = v_mix_B * mask[..., None]
+                        nn_out_B[data_mode]["v"] = (x_1_pred_B[data_mode] - x_B[data_mode]) / (1.0 - t_val + 1e-5) * mask[..., None]
                         if "v_guided" in nn_out_B[data_mode]:
                             nn_out_B[data_mode]["v_guided"] = nn_out_B[data_mode]["v"]
                 
