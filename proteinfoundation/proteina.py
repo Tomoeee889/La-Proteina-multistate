@@ -11,6 +11,7 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from loguru import logger
 from torch import Tensor
 from omegaconf import OmegaConf
+from mlp_model_dataset.mlp_mixer import MLP_Mixer
 
 from proteinfoundation.flow_matching.product_space_flow_matcher import (
     ProductSpaceFlowMatcher,
@@ -24,6 +25,21 @@ from proteinfoundation.utils.pdb_utils import (
     to_pdb,
 )
 
+import sys
+
+# Добавляем папку с mlp_mixer.py в путь поиска
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+mlp_path = os.path.join(project_root, "mlp_model_dataset")
+if mlp_path not in sys.path:
+    sys.path.insert(0, mlp_path)
+
+# Пытаемся импортировать
+try:
+    from mlp_mixer import MLP_Mixer
+    print("✅ MLP_Mixer class imported")
+except ImportError:
+    MLP_Mixer = None
+    print("⚠️ Warning: Could not import MLP_Mixer. Check mlp_model_dataset/mlp_mixer.py")
 
 @rank_zero_only
 def create_dir(dir):
@@ -32,7 +48,7 @@ def create_dir(dir):
 
 
 class Proteina(L.LightningModule):
-    def __init__(self, cfg_exp, store_dir=None, autoencoder_ckpt_path=None):
+    def __init__(self, cfg_exp, store_dir=None, autoencoder_ckpt_path=None, mlp_mixer_ckpt_path=None, **kwargs):
         super().__init__()
         self.save_hyperparameters()
         self.cfg_exp = cfg_exp
@@ -55,6 +71,56 @@ class Proteina(L.LightningModule):
             OmegaConf.set_struct(cfg_exp, True)
 
         self.autoencoder, latent_dim = self.load_autoencoder(cfg_exp, freeze_params=True)
+        self.autoencoder, latent_dim = self.load_autoencoder(cfg_exp, freeze_params=True)
+        
+        # 🔹 1. ОПРЕДЕЛЯЕМ ПУТЬ К ЧЕКПОИНТУ (ЭТОЙ СТРОКИ НЕ ХВАТАЛО!)
+        # Сначала проверяем аргумент функции, потом конфиг
+        target_mlp_path = mlp_mixer_ckpt_path
+        if target_mlp_path is None:
+            # OmegaConf или dict
+            target_mlp_path = getattr(cfg_exp, "mlp_mixer_ckpt_path", None)
+            if target_mlp_path is None and isinstance(cfg_exp, dict):
+                target_mlp_path = cfg_exp.get("mlp_mixer_ckpt_path")
+
+        # 🔹 2. ЗАГРУЗКА МОДЕЛИ
+        # Проверяем, что путь есть И что класс MLP_Mixer доступен (импортирован)
+        if target_mlp_path is not None and 'MLP_Mixer' in globals() and MLP_Mixer is not None:
+            print(f"🚀 Loading MLP Mixer from: {target_mlp_path}")
+            try:
+                # Инициализируем архитектуру
+                mlp_latent_dim = latent_dim if latent_dim is not None else cfg_exp.product_flowmatcher.local_latents.get("dim", 8)
+                self.mlp_mixer = MLP_Mixer(latent_dim=mlp_latent_dim)
+                
+                # Загружаем чекпоинт
+                ckpt = torch.load(target_mlp_path, map_location="cpu", weights_only=False)
+                
+                # Извлекаем state_dict
+                state_dict = ckpt['state_dict'] if 'state_dict' in ckpt else ckpt
+                
+                # Фильтруем ключи (убираем префикс 'mlp_mixer.')
+                mlp_state = {
+                    k.replace('mlp_mixer.', ''): v 
+                    for k, v in state_dict.items() 
+                    if k.startswith('mlp_mixer.')
+                }
+                
+                # Загружаем веса
+                self.mlp_mixer.load_state_dict(mlp_state, strict=False)
+                self.mlp_mixer.eval()
+                for p in self.mlp_mixer.parameters():
+                    p.requires_grad = False
+                print("✅ MLP Mixer loaded successfully!")
+            except Exception as e:
+                print(f"❌ Failed to load MLP Mixer: {e}")
+                import traceback
+                traceback.print_exc()
+                self.mlp_mixer = None
+        else:
+            self.mlp_mixer = None
+            if target_mlp_path is None:
+                print("ℹ️ MLP Mixer not loaded (path not provided).")
+            else:
+                print("ℹ️ MLP Mixer not loaded (class not found).")
         
         # Add right latent dimensionality in the config file, needed to instantiate the flow matcher below
         if latent_dim is not None:
@@ -495,37 +561,121 @@ class Proteina(L.LightningModule):
     def on_validation_epoch_end_data(self):
         self.validation_output_data = []
 
-    def configure_inference(self, inf_cfg, nn_ag):
+    def configure_inference(self, inf_cfg, nn_ag, mlp_mixer=None):
         """Sets inference config with all sampling parameters required by the method (dt, etc)
         and autoguidance network (or None if not provided)."""
         self.inf_cfg = inf_cfg
         self.nn_ag = nn_ag
+        if mlp_mixer is not None:
+            self.mlp_mixer = mlp_mixer  # ← добавляем MLP
 
+    # def predict_step(self, batch: Dict, batch_idx: int) -> List[Tuple[torch.tensor]]:
+    #     """
+    #     Генерация через dual_path + MLP миксинг.
+    #     Возвращает две структуры с идентичной последовательностью.
+    #     """
+    #     self_cond = self.inf_cfg.args.self_cond
+    #     nsteps = self.inf_cfg.args.nsteps
+    #     guidance_w = self.inf_cfg.args.get("guidance_w", 1.0)
+    #     ag_ratio = self.inf_cfg.args.get("ag_ratio", 0.0)
+    #     save_trajectory_every = 0
+        
+    #     fn_predict_for_sampling = partial(
+    #         self.predict_for_sampling, n_recycle=self.inf_cfg.get("n_recycle", 0)
+    #     )
+
+    #     # 1. Два независимых пути через Flow Matching
+    #     gen_samples, extra_info = self.fm.full_simulation(
+    #         batch=batch,
+    #         predict_for_sampling=fn_predict_for_sampling,
+    #         nsteps=nsteps,
+    #         nsamples=batch["nsamples"],
+    #         n=batch["nres"],
+    #         self_cond=self_cond,
+    #         sampling_model_args=self.inf_cfg.model,
+    #         device=self.device,
+    #         save_trajectory_every=save_trajectory_every,
+    #         guidance_w=guidance_w,
+    #         ag_ratio=ag_ratio,
+    #         dual_path_alpha=0.9, # 0.95
+    #         init_noise_scale=0.0,
+    #         mlp_mixer= getattr(self, "mlp_mixer", None),
+    #         mlp_t_threshold=0.95, # 0.95
+    #     )
+        
+    #     z_A, ca_A = gen_samples["local_latents"], gen_samples["bb_ca"]
+    #     z_B, ca_B = extra_info["x_B"]["local_latents"], extra_info["x_B"]["bb_ca"]
+    #     mask = extra_info["mask"]
+
+    #     # 2. MLP миксинг (если загружен)
+    #     if self.mlp_mixer is not None:
+    #         with torch.no_grad():
+    #             z_cons = self.mlp_mixer(z_A - z_B, z_A, z_B)
+    #     else:
+    #         z_cons = (z_A + z_B) / 2.0 
+
+    #     # 3. Декодирование с общим латентом, разными координатами
+    #     from proteinfoundation.utils.coors_utils import nm_to_ang
+    #     out_A = self.autoencoder.decode(z_latent=z_cons, ca_coors_nm=ca_A, mask=mask)
+    #     out_B = self.autoencoder.decode(z_latent=z_cons, ca_coors_nm=ca_B, mask=mask)
+
+    #     # 4. Форматирование вывода: две конформации, одна последовательность
+    #     gen_list = []
+    #     for i in range(batch["nsamples"]):
+    #         gen_list.append((
+    #             nm_to_ang(out_A["coors_nm"][i]), out_A["residue_type"][i],
+    #             nm_to_ang(out_B["coors_nm"][i]), out_B["residue_type"][i]
+    #         ))
+    #     return gen_list
+
+    #     # 🔹 3. Fallback: если MLP нет, стандартный вывод
+    #     sample_prots = self.sample_formatting(x=gen_samples, extra_info=extra_info, ret_mode="coors37_n_aatype")
+    #     return [(sample_prots["coors"][i], sample_prots["residue_type"][i]) 
+    #             for i in range(sample_prots["coors"].shape[0])]
+        
+    #     # ---------------------------------------------------------
+    #     # Если MLP нет, возвращаем стандартный результат
+    #     # ---------------------------------------------------------
+    #     sample_prots = self.sample_formatting(
+    #         x=gen_samples,
+    #         extra_info=extra_info,
+    #         ret_mode="coors37_n_aatype",
+    #     )
+        
+    #     generation_list = []
+    #     if dual_path_alpha > 0.0 and extra_info.get("x_B") is not None:
+    #         sample_prots_B = self.sample_formatting(
+    #             x=extra_info["x_B"],
+    #             extra_info=extra_info,
+    #             ret_mode="coors37_n_aatype",
+    #         )
+    #         for i in range(sample_prots["coors"].shape[0]):
+    #             generation_list.append((
+    #                 sample_prots["coors"][i],
+    #                 sample_prots["residue_type"][i],
+    #                 sample_prots_B["coors"][i],
+    #                 sample_prots_B["residue_type"][i],
+    #             ))
+    #     else:
+    #         for i in range(sample_prots["coors"].shape[0]):
+    #             generation_list.append(
+    #                 (sample_prots["coors"][i], sample_prots["residue_type"][i])
+    #             )
+        
+    #     return generation_list  # List of tupes (coors [n, 37, 3], aatype [n])
     def predict_step(self, batch: Dict, batch_idx: int) -> List[Tuple[torch.tensor]]:
-        """
-        Makes predictions. Should call set_inf_cfg before calling this.
-
-        Args:
-            batch: data batch, contains all info for the samples to generate (nsamples, nres, dt, etc.)
-                The full batch is passed through to the prediction functions.
-
-        Returns:
-            List of tuples. Each tuple represents one of the generated samples, has two elements:
-                coordinates tensor of shape [n, 37, 3], and aatype tensor of shape [n].
-        """
-        self_cond = self.inf_cfg.args.self_cond
-
-        nsteps = self.inf_cfg.args.nsteps
+        self_cond  = self.inf_cfg.args.self_cond
+        nsteps     = self.inf_cfg.args.nsteps
         guidance_w = self.inf_cfg.args.get("guidance_w", 1.0)
-        ag_ratio = self.inf_cfg.args.get("ag_ratio", 0.0)
-        save_trajectory_every = 0
-
+        ag_ratio   = self.inf_cfg.args.get("ag_ratio",   0.0)
+        dual_path_alpha = self.inf_cfg.args.get("dual_path_alpha", 0.0)
+        mlp_t_threshold = self.inf_cfg.args.get("mlp_t_threshold", None)  # не используется, оставлено для совместимости
+    
         fn_predict_for_sampling = partial(
             self.predict_for_sampling, n_recycle=self.inf_cfg.get("n_recycle", 0)
         )
-
-        dual_path_alpha = self.inf_cfg.args.get("dual_path_alpha", 0.0)
-        
+    
+        # 1. Два независимых пути flow matching
         gen_samples, extra_info = self.fm.full_simulation(
             batch=batch,
             predict_for_sampling=fn_predict_for_sampling,
@@ -535,45 +685,69 @@ class Proteina(L.LightningModule):
             self_cond=self_cond,
             sampling_model_args=self.inf_cfg.model,
             device=self.device,
-            save_trajectory_every=save_trajectory_every,
+            save_trajectory_every=0,
             guidance_w=guidance_w,
             ag_ratio=ag_ratio,
-            dual_path_alpha=dual_path_alpha, # new
+            dual_path_alpha=dual_path_alpha,
+            init_noise_scale=0.0,
         )
-        # Dict with the data_modes as keys, and values with batch shape b
-        # extra_info is a dict with additional things, including
-        # "mask", whose value is boolean of shape [nsamples, n]
-
-        # Format the generated samples back to proteins
-        sample_prots = self.sample_formatting(
-            x=gen_samples,
-            extra_info=extra_info,
-            ret_mode="coors37_n_aatype",
-        )
-        # Dict with keys `coors` (a37), `residue_type`, and `mask`,
-        # shapes [b, n, 37, 3], [b, n], [b, n]
-
-        generation_list = []
-        if dual_path_alpha > 0.0 and extra_info.get("x_B") is not None:
-            sample_prots_B = self.sample_formatting(
-            x=extra_info["x_B"],
-            extra_info=extra_info,
-            ret_mode="coors37_n_aatype",
+    
+        mask          = extra_info["mask"]
+        x_B           = extra_info.get("x_B")
+        scaffold_mask = extra_info.get("scaffold_mask")
+    
+        # 2. Если dual path активен — применяем смешивание/MLP на финальных латентах
+        if dual_path_alpha > 0.0 and x_B is not None:
+            z_A  = gen_samples["local_latents"]
+            ca_A = gen_samples["bb_ca"]
+            z_B  = x_B["local_latents"]
+            ca_B = x_B["bb_ca"]
+    
+            mlp_mixer = getattr(self, "mlp_mixer", None)
+    
+            with torch.no_grad():
+                if mlp_mixer is not None:
+                    # MLP консенсус
+                    z_cons = mlp_mixer(z_A - z_B, z_A, z_B)
+                else:
+                    # Без MLP: среднее только по scaffold-части
+                    if scaffold_mask is not None:
+                        sm = scaffold_mask[..., None]
+                        z_avg = (dual_path_alpha * z_A + (1.0 - dual_path_alpha) * z_B)
+                        z_cons = torch.where(sm, z_avg, z_A)
+                    else:
+                        z_cons = dual_path_alpha * z_A + (1.0 - dual_path_alpha) * z_B
+    
+            # 3. Декодируем оба пути с общим/смешанным латентом
+            sample_prots_A = self.sample_formatting(
+                x={"local_latents": z_cons, "bb_ca": ca_A},
+                extra_info=extra_info,
+                ret_mode="coors37_n_aatype",
             )
-            for i in range(sample_prots["coors"].shape[0]):
-                generation_list.append((
-                    sample_prots["coors"][i],
-                    sample_prots["residue_type"][i],
+            sample_prots_B = self.sample_formatting(
+                x={"local_latents": z_cons, "bb_ca": ca_B},
+                extra_info=extra_info,
+                ret_mode="coors37_n_aatype",
+            )
+    
+            return [
+                (
+                    sample_prots_A["coors"][i],
+                    sample_prots_A["residue_type"][i],
                     sample_prots_B["coors"][i],
                     sample_prots_B["residue_type"][i],
-                    ))
-        else:
-            for i in range(sample_prots["coors"].shape[0]):
-                generation_list.append(
-                    (sample_prots["coors"][i], sample_prots["residue_type"][i])
-                    )
-        
-        return generation_list  # List of tupes (coors [n, 37, 3], aatype [n])
+                )
+                for i in range(sample_prots_A["coors"].shape[0])
+            ]
+    
+        # 4. Дефолт: один путь, без MLP
+        sample_prots = self.sample_formatting(
+            x=gen_samples, extra_info=extra_info, ret_mode="coors37_n_aatype"
+        )
+        return [
+            (sample_prots["coors"][i], sample_prots["residue_type"][i])
+            for i in range(sample_prots["coors"].shape[0])
+        ]
         
     def sample_formatting(
         self,
