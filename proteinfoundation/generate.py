@@ -194,13 +194,6 @@ def load_ag_ckpt(cfg: Dict) -> Union[None, torch.nn.Module]:
 
 
 def load_ckpt_n_configure_inference(cfg: Dict) -> Proteina:
-    """
-    Loads the model, potentially the autoguidance checkpoint as well, if requested.
-
-    Returns:
-        Model (Proteina)
-    """
-    # Load model from checkpoint
     ckpt_path = cfg.ckpt_path
     ckpt_file = os.path.join(ckpt_path, cfg.ckpt_name)
     logger.info(f"Using checkpoint {ckpt_file}")
@@ -208,10 +201,37 @@ def load_ckpt_n_configure_inference(cfg: Dict) -> Proteina:
 
     model = Proteina.load_from_checkpoint(ckpt_file, strict=False, autoencoder_ckpt_path=cfg.get("autoencoder_ckpt_path", None))
 
-    # Set inference variables and potentially load autoguidance
     nn_ag = load_ag_ckpt(cfg.generation.args)
 
-    model.configure_inference(cfg.generation, nn_ag=nn_ag)
+    # ← ДОБАВИТЬ БЛОК ЗАГРУЗКИ MLP
+    mlp_mixer = None
+    mlp_ckpt_path = cfg.get("mlp_ckpt_path", None)
+    if mlp_ckpt_path is not None and os.path.exists(mlp_ckpt_path):
+        import sys
+        sys.path.insert(0, os.path.dirname(mlp_ckpt_path))
+        from mlp_mixer import MLP_Mixer
+        
+        latent_dim = model.latent_dim
+        mlp_mixer = MLP_Mixer(latent_dim=latent_dim)
+        
+        ckpt = torch.load(mlp_ckpt_path, map_location="cpu")
+        state_dict = {
+            k.replace("mlp_mixer.", ""): v
+            for k, v in ckpt["state_dict"].items()
+            if k.startswith("mlp_mixer.")
+        }
+        mlp_mixer.load_state_dict(state_dict)
+        mlp_mixer.eval()
+        logger.info(f"Loaded MLP Mixer from {mlp_ckpt_path}")
+    else:
+        logger.info("No MLP Mixer checkpoint provided, running without it")
+    # ← КОНЕЦ БЛОКА
+
+    model.configure_inference(
+        inf_cfg=cfg.generation,
+        nn_ag=None,
+        mlp_mixer=model.mlp_mixer,  # уже загружен в __init__, просто передаём
+    )
 
     return model
 
@@ -279,24 +299,20 @@ def save_predictions(
 
     samples_per_length = defaultdict(int)
     for j, pred in enumerate(predictions):
-        coors_atom37, residue_type = pred  # [n, 37, 3] and [n]
+        dual_path = len(pred) == 4
+        coors_atom37, residue_type = pred[0], pred[1]
         n = coors_atom37.shape[-3]
         if chain_indexes:
             chain_index = chain_indexes[j].numpy()
         else:
             chain_index = None
-
-        # Create directory where everything related to this sample will be stored
         suffix = ""
         dir_name = f"job_{job_id}_n_{n}_id_{samples_per_length[n]}{suffix}"
         samples_per_length[n] += 1
-        sample_root_path = os.path.join(
-            root_path, dir_name
-        )
+        sample_root_path = os.path.join(root_path, dir_name)
         os.makedirs(sample_root_path, exist_ok=False)
 
-        # Save generated structure as pdb
-        fname = dir_name + ".pdb"
+        fname = dir_name + ("_pathA.pdb" if dual_path else ".pdb")
         pdb_path = os.path.join(sample_root_path, fname)
         write_prot_to_pdb(
             prot_pos=coors_atom37.float().detach().cpu().numpy(),
@@ -307,6 +323,18 @@ def save_predictions(
             no_indexing=True,
         )
 
+        if dual_path:
+            coors_atom37_B, residue_type_B = pred[2], pred[3]
+            fname_B = dir_name + "_pathB.pdb"
+            pdb_path_B = os.path.join(sample_root_path, fname_B)
+            write_prot_to_pdb(
+                prot_pos=coors_atom37_B.float().detach().cpu().numpy(),
+                aatype=residue_type_B.detach().cpu().numpy(),
+                file_path=pdb_path_B,
+                chain_index=chain_index,
+                overwrite=True,
+                no_indexing=True,
+            )
 
 
 def save_motif_predictions(
