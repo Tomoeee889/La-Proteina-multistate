@@ -51,3 +51,32 @@ checkpoints/
 *.swp
 *.swo
 *~
+
+data/
+*.txt
+*.gz
+*.idx
+*.pdb
+*.fasta
+*.npz
+*.xtc
+
+# Результаты BioEmu
+bioemu_ensembles*/
+best_pdbs*/
+top_designs*/
+top_full_ensembles*/
+top_ensembles*/
+
+# Веса моделей
+checkpoints/
+*.ckpt
+*.pt
+*.pth
+
+# Кэш и временные файлы
+__pycache__/
+*.pyc
+.bioemu_embeds_cache/
+
+

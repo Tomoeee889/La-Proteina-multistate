@@ -1,8 +1,0 @@
-pdb_id:        1a64
-chain:         A
-total_residues:94
-gap_size:      34
-center_resseq: 52
-gap_start_idx: 29
-gap_end_idx:   63
-gap_resseq:    33,34,35,36,37,38,39,40,41,42,43,44,45,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68
