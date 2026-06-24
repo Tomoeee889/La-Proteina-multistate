@@ -1,0 +1,8 @@
+pdb_id:        1a2u
+chain:         A
+total_residues:134
+gap_size:      31
+center_resseq: 72
+gap_start_idx: 49
+gap_end_idx:   80
+gap_resseq:    57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87

@@ -1,0 +1,20 @@
+dataset:
+  motif_dict_cfg:
+    TEST_DUALITY:
+      contig_string: A71-107/0/B1-111/100/B112-121/0
+      motif_pdb_path: motif_benchmark_pdb_files/ligand1.pdb
+      motif_only: True
+      motif_min_length: 258
+      motif_max_length: 258
+      segment_order: "A;B"
+      atom_selection_mode: "all_atom"
+        
+    
+    1PRW_AA:
+      contig_string: 5-20/A1-20/10-25/B1-20/5-20
+      motif_pdb_path: motif_benchmark_pdb_files/1prw_aa.pdb
+      motif_only: True
+      motif_min_length: 60
+      motif_max_length: 105
+      segment_order: "A;B"
+      atom_selection_mode: "all_atom"

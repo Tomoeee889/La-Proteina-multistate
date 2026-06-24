@@ -515,151 +515,287 @@ class ProductSpaceFlowMatcher(L.LightningModule):
         save_trajectory_every: int = 0,
         guidance_w: float = 1.0,
         ag_ratio: float = 0.0,
-    ) -> Dict[str, Tensor]:
+        dual_path_alpha: float = 0.9,
+        init_noise_scale: float = 0.0,
+        init_latent_A=None,
+        init_latent_B=None,
+        mlp_mixer=None,               # <-- НОВЫЙ: сам MLP объект (nn.Module)
+        mlp_t_threshold: float = 1.1, # <-- НОВЫЙ: порог t (по умолчанию 1.1 → никогда не срабатывает)
+    ) -> Tuple[Dict, Dict]:
         """
-        Generates samples by simulating the
-
-        dx_t = v(x_t, t) dt
-
-        or
-
-        dx_t = [v(x_t, t) + g(t) s(x_t, t)] dt + \sqrt{2g(t)} dw_t
-
-        from t=0 up to t=1.
-
-        Which equation is simulated depends on data modality and parameters chosen.
-
-        Args:
-            batch (Dict): Input batch. May contain:
-                - 'nsamples': int, number of samples to generate (optional, will use nsamples param if not present)
-                - 'nres' or 'n': int, protein length (optional, will use n param if not present)  
-                - 'mask': torch.BoolTensor, shape [nsamples, n], mask for valid residues (optional, will be generated if not present)
-                - Any conditioning fields required by the prediction function (e.g., cath_codes, motif info, etc.)
-                
-                The following fields will be added/updated during simulation:
-                - 'x_t': torch.Tensor, current state (updated each step)
-                - 't': dict of time values for each data mode (updated each step)
-                - 'mask': torch.BoolTensor, shape [nsamples, n], mask for valid residues (added if not present)
-                - 'x_sc': torch.Tensor, self-conditioning input (added if self_cond=True)
-            predict_for_sampling (Callable): Function that calls the nn, receives the full batch dict
-            nsteps (int): Number of simulation steps
-            nsamples (int): Number of samples to generate
-            n (int): Protein length
-            self_cond (bool): Whether to use self-conditioning
-            sampling_model_args (Dict): Model-specific sampling arguments
-            device (torch.device): Device to run simulation on
-            save_trajectory_every (int): How often to save full generation trajectory, default 0 (no saving)
-            guidance_w (float): Guidance weight
-            ag_ratio (float): Autoguidance ratio
-
-        Returns:
-            x (dict): Generated samples, with keys for each data mode and values with batch shape nsamples
-            mask (torch.Tensor): Boolean mask of shape [nsamples, n]
+        Dual path flow matching с опциональным MLP-смешиванием начиная с порога t.
         """
-        # overwrite n with the correct shape of coors_nm in batch
         for key, value in batch.items():
-            if (
-                isinstance(value, torch.Tensor)
-                and value.dim() > 0
-                and value.size(0) == 1
-            ):
+            if isinstance(value, torch.Tensor) and value.dim() > 0 and value.size(0) == 1:
                 batch[key] = value.squeeze(0)
-
-        # Use mask from batch if present, otherwise generate it
+    
         if "mask" in batch and batch["mask"] is not None:
             mask = batch["mask"]
         else:
-            mask = torch.ones(nsamples, n).long().bool().to(device)
+            mask = torch.ones(nsamples, n, dtype=torch.bool, device=device)
         assert mask.shape == (nsamples, n)
-        
-        if save_trajectory_every > 0:
-            # Create a list of trajectory dictionaries, one for each sample in batch
-            [{} for _ in range(nsamples)]
-
+    
         ts = {
-            data_mode: get_schedule(
-                mode=sampling_model_args[data_mode]["schedule"]["mode"],
-                nsteps=int(nsteps),
-                p1=sampling_model_args[data_mode]["schedule"]["p"],
+            dm: get_schedule(
+                mode=sampling_model_args[dm]["schedule"]["mode"],
+                nsteps=nsteps,
+                p1=sampling_model_args[dm]["schedule"]["p"]
             )
-            for data_mode in self.data_modes
-        }  # each [nsteps + 1], first element is 0, last is 1
-
-        gt = {
-            data_mode: get_gt(
-                t=ts[data_mode][:-1],  # [nsteps], ts[-1]=1 not used to eval
-                mode=sampling_model_args[data_mode]["gt"]["mode"],
-                param=sampling_model_args[data_mode]["gt"]["p"],
-                clamp_val=sampling_model_args[data_mode]["gt"]["clamp_val"],
-            )
-            for data_mode in self.data_modes
+            for dm in self.data_modes
         }
-
-        with torch.no_grad():
-            x = self.sample_noise(
-                n,
-                shape=(nsamples,),
-                device=device,
-                mask=mask,
+        gt = {
+            dm: get_gt(
+                t=ts[dm][:-1],
+                mode=sampling_model_args[dm]["gt"]["mode"],
+                param=sampling_model_args[dm]["gt"]["p"],
+                clamp_val=sampling_model_args[dm]["gt"].get("clamp_val")
             )
-
+            for dm in self.data_modes
+        }
+    
+        dual_enabled = dual_path_alpha > 0.0 or init_latent_B is not None or init_noise_scale > 0.0
+    
+        # Флаг: нужен ли MLP в цикле
+        mlp_in_loop = (
+            mlp_mixer is not None
+            and dual_enabled
+            and "local_latents" in self.data_modes
+            and mlp_t_threshold <= 1.0  # если > 1.0 — никогда не срабатывает
+        )
+    
+        with torch.no_grad():
+            # --- Инициализация пути A ---
+            if init_latent_A is not None:
+                x = {k: v.clone() for k, v in init_latent_A.items()}
+            else:
+                x = self.sample_noise(n, shape=(nsamples,), device=device, mask=mask)
+    
+            # --- Инициализация пути B ---
+            x_B = None
+            if dual_enabled:
+                if init_latent_B is not None:
+                    x_B = {k: v.clone() for k, v in init_latent_B.items()}
+                elif init_noise_scale > 0.0:
+                    noise_B = self.sample_noise(n, shape=(nsamples,), device=device, mask=mask)
+                    x_B = {dm: x[dm] + init_noise_scale * noise_B[dm] for dm in self.data_modes}
+                else:
+                    x_B = self.sample_noise(n, shape=(nsamples,), device=device, mask=mask)
+    
+            # Scaffold маска для смешивания
+            scaffold_mask = mask.clone()
+            if "motif_mask" in batch:
+                scaffold_mask = ~batch["motif_mask"].any(dim=-1)
+    
+            x_1_pred = None
+            x_1_pred_B = None
+    
+            # --- Цикл интегрирования ---
             for step in range(nsteps):
-                t = {
-                    data_mode: ts[data_mode][step] * torch.ones(nsamples, device=device)
-                    for data_mode in self.data_modes
-                }
-                dt = {
-                    data_mode: ts[data_mode][step + 1] - ts[data_mode][step]
-                    for data_mode in self.data_modes
-                }
-                gt_step = {
-                    data_mode: gt[data_mode][step] for data_mode in self.data_modes
-                }
-
-                # Update the batch with current x, t, mask, etc.
-                batch["x_t"] = x
-                batch["t"] = t
+                t    = {dm: ts[dm][step]     * torch.ones(nsamples, device=device) for dm in self.data_modes}
+                dt   = {dm: ts[dm][step + 1] - ts[dm][step]                        for dm in self.data_modes}
+                gt_s = {dm: gt[dm][step]                                            for dm in self.data_modes}
+    
+                # Путь A
+                batch["x_t"]  = x
+                batch["t"]    = t
                 batch["mask"] = mask
-                
-                # self conditioning
-                if step > 0 and self_cond:
+                if step > 0 and self_cond and x_1_pred is not None:
                     batch["x_sc"] = x_1_pred
-
-                # get clean prediction and guided vector
+    
                 nn_out = self.get_clean_pred_n_guided_vector(
                     batch=batch,
                     predict_for_sampling=predict_for_sampling,
                     guidance_w=guidance_w,
                     ag_ratio=ag_ratio,
                 )
-                # Dict[data_mode,
-                #   Dict[str, torch.Tensor]
-                # ] where str is some prediction ("x_1", "v", "score", "guided_v", "guided_score", ...)
-                # We just track all predictions this way
-
-                x_1_pred = self.nn_out_to_clean_sample_prediction(
-                    batch=batch, nn_out=nn_out
-                )
-                # Dict[data_mode, torch.Tensor]
-
-                simulation_step_params = {
-                    data_mode: sampling_model_args[data_mode]["simulation_step_params"]
-                    for data_mode in self.data_modes
-                }
+                x_1_pred = self.nn_out_to_clean_sample_prediction(batch=batch, nn_out=nn_out)
+    
+                # Путь B
+                if dual_enabled:
+                    batch_B = {**batch}
+                    batch_B["x_t"] = x_B
+                    if step > 0 and self_cond and x_1_pred_B is not None:
+                        batch_B["x_sc"] = x_1_pred_B
+    
+                    nn_out_B = self.get_clean_pred_n_guided_vector(
+                        batch=batch_B,
+                        predict_for_sampling=predict_for_sampling,
+                        guidance_w=guidance_w,
+                        ag_ratio=ag_ratio,
+                    )
+                    x_1_pred_B = self.nn_out_to_clean_sample_prediction(batch=batch_B, nn_out=nn_out_B)
+    
+                # Шаг Эйлера
+                sim_params = {dm: sampling_model_args[dm]["simulation_step_params"] for dm in self.data_modes}
                 x = self.simulation_step(
-                    x_t=x,
-                    nn_out=nn_out,
-                    t=t,
-                    dt=dt,
-                    gt=gt_step,
-                    mask=mask,
-                    simulation_step_params=simulation_step_params,
+                    x_t=x, nn_out=nn_out, t=t, dt=dt, gt=gt_s, mask=mask,
+                    simulation_step_params=sim_params,
                 )
+                if dual_enabled:
+                    x_B = self.simulation_step(
+                        x_t=x_B, nn_out=nn_out_B, t=t, dt=dt, gt=gt_s, mask=mask,
+                        simulation_step_params=sim_params,
+                    )
+    
+                # ================================================================
+                # MLP-смешивание: применяем начиная с порога t >= mlp_t_threshold
+                # t_next — это t ПОСЛЕ текущего шага
+                # ================================================================
+                if mlp_in_loop:
+                    # Берём t_next по первой модальности (они синхронны)
+                    t_next = ts[self.data_modes[0]][step + 1].item()
+    
+                    if t_next >= mlp_t_threshold:
+                        z_A = x["local_latents"]    # [nsamples, n, d]
+                        z_B = x_B["local_latents"]  # [nsamples, n, d]
+    
+                        z_cons = mlp_mixer(z_A - z_B, z_A, z_B)  # [nsamples, n, d]
+    
+                        # Применяем только на scaffold-части (если есть мотив)
+                        if scaffold_mask is not None:
+                            sm = scaffold_mask[..., None]  # [nsamples, n, 1]
+                            z_cons = torch.where(sm, z_cons, z_A)  # вне scaffold — берём z_A
+    
+                        # Оба пути получают одинаковый консенсус-латент
+                        x["local_latents"]    = z_cons
+                        x_B["local_latents"]  = z_cons
+    
+        additional_info = {
+            "mask":          mask,
+            "x_B":           x_B if dual_enabled else None,
+            "scaffold_mask": scaffold_mask if dual_enabled else None,
+        }
+        return x, additional_info
 
-            additional_info = {
-                "mask": mask,
-            }
-            return x, additional_info
+    # def full_simulation(
+    #     self,
+    #     batch: Dict,
+    #     predict_for_sampling: Callable,
+    #     nsteps: int,
+    #     nsamples: int,
+    #     n: int,
+    #     self_cond: bool,
+    #     sampling_model_args: Dict[str, Dict],
+    #     device: torch.device,
+    #     save_trajectory_every: int = 0,
+    #     guidance_w: float = 1.0,
+    #     ag_ratio: float = 0.0,
+    #     dual_path_alpha: float = 0.0,
+    # ) -> Dict[str, Tensor]:
+    #     """
+    #     Генерация с двумя независимыми путями (A и B), стартующими из разного шума.
+    #     При dual_path_alpha > 0.0 предсказания путей смешиваются/обмениваются на scaffold-частях.
+    #     """
+    #     # Очистка батча от лишних измерений
+    #     for key, value in batch.items():
+    #         if isinstance(value, torch.Tensor) and value.dim() > 0 and value.size(0) == 1:
+    #             batch[key] = value.squeeze(0)
+
+    #     # Маска
+    #     if "mask" in batch and batch["mask"] is not None:
+    #         mask = batch["mask"]
+    #     else:
+    #         mask = torch.ones(nsamples, n, dtype=torch.bool, device=device)
+    #     assert mask.shape == (nsamples, n)
+
+    #     # Расписания времени и шума для интегрирования
+    #     ts = {
+    #         dm: get_schedule(mode=sampling_model_args[dm]["schedule"]["mode"], nsteps=nsteps, p1=sampling_model_args[dm]["schedule"]["p"])
+    #         for dm in self.data_modes
+    #     }
+    #     gt = {
+    #         dm: get_gt(t=ts[dm][:-1], mode=sampling_model_args[dm]["gt"]["mode"], param=sampling_model_args[dm]["gt"]["p"], clamp_val=sampling_model_args[dm]["gt"].get("clamp_val"))
+    #         for dm in self.data_modes
+    #     }
+
+    #     with torch.no_grad():
+    #         # =================================================================
+    #         # 1. ИНИЦИАЛИЗАЦИЯ: НЕЗАВИСИМЫЕ ШУМЫ ДЛЯ ПУТЕЙ A И B
+    #         # =================================================================
+    #         x = self.sample_noise(n, shape=(nsamples,), device=device, mask=mask)      # Путь A
+    #         x_B = self.sample_noise(n, shape=(nsamples,), device=device, mask=mask)    # Путь B
+            
+    #         dual_enabled = dual_path_alpha > 0.0
+
+    #         # Маска смешивания: если есть мотив, его не трогаем (смешиваем только scaffold)
+    #         scaffold_mask = mask.clone()
+    #         if "motif_mask" in batch:
+    #             scaffold_mask = ~batch["motif_mask"].any(dim=-1)
+
+    #         x_1_pred_B = None
+
+    #         # =================================================================
+    #         # 2. ЦИКЛ ИНТЕГРИРОВАНИЯ
+    #         # =================================================================
+    #         for step in range(nsteps):
+    #             t = {dm: ts[dm][step] * torch.ones(nsamples, device=device) for dm in self.data_modes}
+    #             dt = {dm: ts[dm][step + 1] - ts[dm][step] for dm in self.data_modes}
+    #             gt_step = {dm: gt[dm][step] for dm in self.data_modes}
+
+    #             # --- Путь A ---
+    #             batch["x_t"] = x
+    #             batch["t"] = t
+    #             batch["mask"] = mask
+    #             if step > 0 and self_cond:
+    #                 batch["x_sc"] = x_1_pred
+
+    #             nn_out = self.get_clean_pred_n_guided_vector(
+    #                 batch=batch, predict_for_sampling=predict_for_sampling, 
+    #                 guidance_w=guidance_w, ag_ratio=ag_ratio
+    #             )
+    #             x_1_pred = self.nn_out_to_clean_sample_prediction(batch=batch, nn_out=nn_out)
+
+    #             # --- Путь B (активен только если dual_path_alpha > 0.0) ---
+    #             if dual_enabled:
+    #                 batch_B = {**batch}
+    #                 batch_B["x_t"] = x_B
+    #                 if step > 0 and self_cond:
+    #                     batch_B["x_sc"] = x_1_pred_B
+
+    #                 nn_out_B = self.get_clean_pred_n_guided_vector(
+    #                     batch=batch_B, predict_for_sampling=predict_for_sampling, 
+    #                     guidance_w=guidance_w, ag_ratio=ag_ratio
+    #                 )
+    #                 x_1_pred_B = self.nn_out_to_clean_sample_prediction(batch=batch_B, nn_out=nn_out_B)
+
+    #                 # 🔹 СМЕШИВАНИЕ / КРОСС-ОБМЕН ПРЕДСКАЗАНИЯМИ
+    #                 sm = scaffold_mask[..., None]
+    #                 for dm in self.data_modes:
+    #                     pred_A = x_1_pred[dm]
+    #                     pred_B = x_1_pred_B[dm]
+
+    #                     # Линейная интерполяция предсказаний
+    #                     mix_A = dual_path_alpha * pred_A + (1.0 - dual_path_alpha) * pred_B
+    #                     mix_B = dual_path_alpha * pred_B + (1.0 - dual_path_alpha) * pred_A
+
+    #                     # Применяем смешивание только на scaffold-частях
+    #                     x_1_pred[dm] = torch.where(sm, mix_A, pred_A)
+    #                     x_1_pred_B[dm] = torch.where(sm, mix_B, pred_B)
+
+    #             # Вычисление скоростей v = (x_1_pred - x_t) / (1 - t)
+    #             for dm in self.data_modes:
+    #                 t_val = t[dm][..., None, None]
+    #                 nn_out[dm]["v"] = (x_1_pred[dm] - x[dm]) / (1.0 - t_val + 1e-5) * mask[..., None]
+    #                 if dual_enabled:
+    #                     nn_out_B[dm]["v"] = (x_1_pred_B[dm] - x_B[dm]) / (1.0 - t_val + 1e-5) * mask[..., None]
+
+    #             # Шаг Эйлера для пути A
+    #             sim_params = {dm: sampling_model_args[dm]["simulation_step_params"] for dm in self.data_modes}
+    #             x = self.simulation_step(x_t=x, nn_out=nn_out, t=t, dt=dt, gt=gt_step, mask=mask, simulation_step_params=sim_params)
+
+    #             # Шаг Эйлера для пути B (если активен)
+    #             if dual_enabled:
+    #                 x_B = self.simulation_step(x_t=x_B, nn_out=nn_out_B, t=t, dt=dt, gt=gt_step, mask=mask, simulation_step_params=sim_params)
+
+    #         # =================================================================
+    #         # 3. ВОЗВРАТ РЕЗУЛЬТАТА
+    #         # =================================================================
+    #         additional_info = {
+    #             "mask": mask,
+    #             "x_B": x_B if dual_enabled else None,
+    #         }
+            
+    #     return x, additional_info
 
 
 def get_gt(

@@ -1,0 +1,33 @@
+defaults:
+  - inference_base
+  - generation: motif
+  - _self_
+
+run_name_: inpainting_1a1l_A
+ckpt_name: LD4_motif_idx_aa.ckpt
+autoencoder_ckpt_path: ./checkpoints_laproteina/AE3_motif.ckpt
+
+generation:
+  args:
+    dual_path_alpha: 0.65
+    nsteps: 500
+
+  model:
+    bb_ca:
+      simulation_step_params:
+        center_every_step: False
+
+  dataset:
+    motif_task_name: 1a1l_A
+    nsamples: 1
+    max_nsamples_per_batch: 2
+
+    motif_dict_cfg:
+      1a1l_A:
+        contig_string: "A103-161/34-34/A162-187"
+        motif_pdb_path: /home/domain/aristowi/la-proteina-main/motif_benchmark_pdb_files/1a1l_A.pdb
+        motif_only: false
+        motif_min_length: 24
+        motif_max_length: 44
+        segment_order: "A"
+        atom_selection_mode: "all_atom"

@@ -1,0 +1,8 @@
+pdb_id:        159l
+chain:         A
+total_residues:162
+gap_size:      36
+center_resseq: 53
+gap_start_idx: 34
+gap_end_idx:   70
+gap_resseq:    35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70

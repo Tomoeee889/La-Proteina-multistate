@@ -519,9 +519,11 @@ class ProductSpaceFlowMatcher(L.LightningModule):
         init_noise_scale: float = 0.0,
         init_latent_A=None,
         init_latent_B=None,
+        mlp_mixer=None,               # <-- НОВЫЙ: сам MLP объект (nn.Module)
+        mlp_t_threshold: float = 1.1, # <-- НОВЫЙ: порог t (по умолчанию 1.1 → никогда не срабатывает)
     ) -> Tuple[Dict, Dict]:
         """
-        Dual path flow matching. MLP-пост-обработка НЕ здесь — она в predict_step после возврата.
+        Dual path flow matching с опциональным MLP-смешиванием начиная с порога t.
         """
         for key, value in batch.items():
             if isinstance(value, torch.Tensor) and value.dim() > 0 and value.size(0) == 1:
@@ -552,6 +554,14 @@ class ProductSpaceFlowMatcher(L.LightningModule):
         }
     
         dual_enabled = dual_path_alpha > 0.0 or init_latent_B is not None or init_noise_scale > 0.0
+    
+        # Флаг: нужен ли MLP в цикле
+        mlp_in_loop = (
+            mlp_mixer is not None
+            and dual_enabled
+            and "local_latents" in self.data_modes
+            and mlp_t_threshold <= 1.0  # если > 1.0 — никогда не срабатывает
+        )
     
         with torch.no_grad():
             # --- Инициализация пути A ---
@@ -600,7 +610,7 @@ class ProductSpaceFlowMatcher(L.LightningModule):
                 )
                 x_1_pred = self.nn_out_to_clean_sample_prediction(batch=batch, nn_out=nn_out)
     
-                # Путь B — независимый, без смешивания предсказаний
+                # Путь B
                 if dual_enabled:
                     batch_B = {**batch}
                     batch_B["x_t"] = x_B
@@ -627,9 +637,32 @@ class ProductSpaceFlowMatcher(L.LightningModule):
                         simulation_step_params=sim_params,
                     )
     
+                # ================================================================
+                # MLP-смешивание: применяем начиная с порога t >= mlp_t_threshold
+                # t_next — это t ПОСЛЕ текущего шага
+                # ================================================================
+                if mlp_in_loop:
+                    # Берём t_next по первой модальности (они синхронны)
+                    t_next = ts[self.data_modes[0]][step + 1].item()
+    
+                    if t_next >= mlp_t_threshold:
+                        z_A = x["local_latents"]    # [nsamples, n, d]
+                        z_B = x_B["local_latents"]  # [nsamples, n, d]
+    
+                        z_cons = mlp_mixer(z_A - z_B, z_A, z_B)  # [nsamples, n, d]
+    
+                        # Применяем только на scaffold-части (если есть мотив)
+                        if scaffold_mask is not None:
+                            sm = scaffold_mask[..., None]  # [nsamples, n, 1]
+                            z_cons = torch.where(sm, z_cons, z_A)  # вне scaffold — берём z_A
+    
+                        # Оба пути получают одинаковый консенсус-латент
+                        x["local_latents"]    = z_cons
+                        x_B["local_latents"]  = z_cons
+    
         additional_info = {
-            "mask":    mask,
-            "x_B":     x_B if dual_enabled else None,
+            "mask":          mask,
+            "x_B":           x_B if dual_enabled else None,
             "scaffold_mask": scaffold_mask if dual_enabled else None,
         }
         return x, additional_info

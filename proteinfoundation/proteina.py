@@ -664,18 +664,22 @@ class Proteina(L.LightningModule):
         
     #     return generation_list  # List of tupes (coors [n, 37, 3], aatype [n])
     def predict_step(self, batch: Dict, batch_idx: int) -> List[Tuple[torch.tensor]]:
-        self_cond  = self.inf_cfg.args.self_cond
-        nsteps     = self.inf_cfg.args.nsteps
-        guidance_w = self.inf_cfg.args.get("guidance_w", 1.0)
-        ag_ratio   = self.inf_cfg.args.get("ag_ratio",   0.0)
+        self_cond       = self.inf_cfg.args.self_cond
+        nsteps          = self.inf_cfg.args.nsteps
+        guidance_w      = self.inf_cfg.args.get("guidance_w", 1.0)
+        ag_ratio        = self.inf_cfg.args.get("ag_ratio",   0.0)
         dual_path_alpha = self.inf_cfg.args.get("dual_path_alpha", 0.0)
-        mlp_t_threshold = self.inf_cfg.args.get("mlp_t_threshold", None)  # не используется, оставлено для совместимости
-    
+        
+        # Порог t, начиная с которого MLP применяется в цикле.
+        # Если не задан в конфиге — ставим 1.1, т.е. MLP только после цикла (старое поведение).
+        mlp_t_threshold = self.inf_cfg.args.get("mlp_t_threshold", 1.1)
+        
         fn_predict_for_sampling = partial(
             self.predict_for_sampling, n_recycle=self.inf_cfg.get("n_recycle", 0)
         )
     
-        # 1. Два независимых пути flow matching
+        mlp_mixer = getattr(self, "mlp_mixer", None)
+    
         gen_samples, extra_info = self.fm.full_simulation(
             batch=batch,
             predict_for_sampling=fn_predict_for_sampling,
@@ -690,35 +694,35 @@ class Proteina(L.LightningModule):
             ag_ratio=ag_ratio,
             dual_path_alpha=dual_path_alpha,
             init_noise_scale=0.0,
+            mlp_mixer=mlp_mixer,           # <-- передаём MLP
+            mlp_t_threshold=mlp_t_threshold,  # <-- передаём порог
         )
     
         mask          = extra_info["mask"]
         x_B           = extra_info.get("x_B")
         scaffold_mask = extra_info.get("scaffold_mask")
     
-        # 2. Если dual path активен — применяем смешивание/MLP на финальных латентах
+        # Если dual path активен
         if dual_path_alpha > 0.0 and x_B is not None:
             z_A  = gen_samples["local_latents"]
             ca_A = gen_samples["bb_ca"]
             z_B  = x_B["local_latents"]
             ca_B = x_B["bb_ca"]
     
-            mlp_mixer = getattr(self, "mlp_mixer", None)
-    
             with torch.no_grad():
+                # Если MLP уже применялся в цикле (mlp_t_threshold <= 1.0),
+                # то z_A == z_B == z_cons — финальное смешивание необязательно,
+                # но для надёжности делаем его снова.
                 if mlp_mixer is not None:
-                    # MLP консенсус
                     z_cons = mlp_mixer(z_A - z_B, z_A, z_B)
                 else:
-                    # Без MLP: среднее только по scaffold-части
                     if scaffold_mask is not None:
                         sm = scaffold_mask[..., None]
-                        z_avg = (dual_path_alpha * z_A + (1.0 - dual_path_alpha) * z_B)
+                        z_avg = dual_path_alpha * z_A + (1.0 - dual_path_alpha) * z_B
                         z_cons = torch.where(sm, z_avg, z_A)
                     else:
                         z_cons = dual_path_alpha * z_A + (1.0 - dual_path_alpha) * z_B
     
-            # 3. Декодируем оба пути с общим/смешанным латентом
             sample_prots_A = self.sample_formatting(
                 x={"local_latents": z_cons, "bb_ca": ca_A},
                 extra_info=extra_info,
@@ -732,15 +736,13 @@ class Proteina(L.LightningModule):
     
             return [
                 (
-                    sample_prots_A["coors"][i],
-                    sample_prots_A["residue_type"][i],
-                    sample_prots_B["coors"][i],
-                    sample_prots_B["residue_type"][i],
+                    sample_prots_A["coors"][i], sample_prots_A["residue_type"][i],
+                    sample_prots_B["coors"][i], sample_prots_B["residue_type"][i],
                 )
                 for i in range(sample_prots_A["coors"].shape[0])
             ]
     
-        # 4. Дефолт: один путь, без MLP
+        # Дефолт: один путь
         sample_prots = self.sample_formatting(
             x=gen_samples, extra_info=extra_info, ret_mode="coors37_n_aatype"
         )
@@ -748,6 +750,7 @@ class Proteina(L.LightningModule):
             (sample_prots["coors"][i], sample_prots["residue_type"][i])
             for i in range(sample_prots["coors"].shape[0])
         ]
+
         
     def sample_formatting(
         self,

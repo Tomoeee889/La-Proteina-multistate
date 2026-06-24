@@ -27,3 +27,27 @@ wandb/
 /inference
 /ProteinMPNN/ca_model_weights/*.pt
 /ProteinMPNN/vanilla_model_weights/*.pt
+
+# BioEmu и временные файлы
+bioemu_ensembles*/
+best_pdbs*/
+top_designs*/
+top_full_ensembles*/
+*.xtc
+*.npz
+
+# Веса моделей и кэш
+checkpoints/
+*.ckpt
+*.pt
+*.pth
+.bioemu_embeds_cache/
+
+# Результаты (если слишком большие)
+*.csv
+
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
