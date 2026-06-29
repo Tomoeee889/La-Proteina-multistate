@@ -125,7 +125,7 @@ if __name__ == "__main__":
     if "product_flowmatcher" in flow_matcher.cfg_exp:
         flow_matcher.cfg_exp.product_flowmatcher.local_latents.dim = autoencoder.latent_dim
     OmegaConf.set_struct(flow_matcher.cfg_exp, True)
-    print("✅ cfg_exp.model patched")
+    print("cfg_exp.model patched")
 
     mlp_trainer = MLP_Trainer(autoencoder=autoencoder, flow_matcher=flow_matcher, latent_dim=autoencoder.latent_dim)
 
@@ -142,12 +142,12 @@ if __name__ == "__main__":
 
     pl_trainer = L.Trainer(
         max_epochs=40, accelerator="gpu", devices=1,
-        precision="bf16-mixed", # ✅ Lightning автоматически управляет AMP
+        precision="bf16-mixed", # Lightning 
         logger=[CSVLogger(save_dir="csv_logs", name="mlp_mixer"), TensorBoardLogger("tb_logs", name="mlp_mixer")],
         callbacks=[checkpoint_callback, early_stopping],
         log_every_n_steps=10,
         gradient_clip_val=0.5, gradient_clip_algorithm="norm",
-        accumulate_grad_batches=8, # Эффективный batch = 64
+        accumulate_grad_batches=8, 
         check_val_every_n_epoch=1, limit_val_batches=50,
     )
 
