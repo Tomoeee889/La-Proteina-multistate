@@ -575,7 +575,7 @@ class ProductSpaceFlowMatcher(L.LightningModule):
             if dual_enabled:
                 if init_latent_B is not None:
                     x_B = {k: v.clone() for k, v in init_latent_B.items()}
-                elif init_noise_scale > 0.0:
+                elif init_noise_scale >= 0.0:
                     noise_B = self.sample_noise(n, shape=(nsamples,), device=device, mask=mask)
                     x_B = {dm: x[dm] + init_noise_scale * noise_B[dm] for dm in self.data_modes}
                 else:

@@ -11,7 +11,7 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from loguru import logger
 from torch import Tensor
 from omegaconf import OmegaConf
-from mlp_model_dataset.mlp_mixer import MLP_Mixer
+from mlp_model.mlp_mixer import MLP_Mixer
 
 from proteinfoundation.flow_matching.product_space_flow_matcher import (
     ProductSpaceFlowMatcher,
