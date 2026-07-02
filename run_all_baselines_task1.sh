@@ -20,10 +20,10 @@ cd "$PROJECT_ROOT" || exit 1
 export DATA_PATH=./data
 
 NUM_PAIRS=50
-OUTPUT_DIR="baselines/task1_unconditional"
+OUTPUT_DIR="baselines/task1_unconditional_default"
 
 # 7 points for Task 1: small noise neighborhoods
-NOISE_SCALES=(0.00 0.05 0.10 0.15 0.20 0.25 0.30)
+NOISE_SCALES=(0.00 0.05 0.10 0.15 0.20 0.25 0.30 0.40 0.70 1.0)
 
 for scale in "${NOISE_SCALES[@]}"; do
     echo "=========================================="

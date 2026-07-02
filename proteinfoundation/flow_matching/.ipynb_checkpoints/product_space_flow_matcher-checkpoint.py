@@ -626,16 +626,30 @@ class ProductSpaceFlowMatcher(L.LightningModule):
                     x_1_pred_B = self.nn_out_to_clean_sample_prediction(batch=batch_B, nn_out=nn_out_B)
     
                 # Шаг Эйлера
+
                 sim_params = {dm: sampling_model_args[dm]["simulation_step_params"] for dm in self.data_modes}
+
+                # "Сфотографировали" состояние генератора ДО шага A -> это s0
+                if dual_enabled:
+                    cpu_rng_state = torch.get_rng_state()
+                    if torch.cuda.is_available():
+                        cuda_rng_state = torch.cuda.get_rng_state_all()
+
                 x = self.simulation_step(
                     x_t=x, nn_out=nn_out, t=t, dt=dt, gt=gt_s, mask=mask,
                     simulation_step_params=sim_params,
-                )
+                )   # внутри был torch.randn(...): s0 -> s1, использовался eps_A
+
                 if dual_enabled:
+                    # "Отмотали" генератор обратно в s0
+                    torch.set_rng_state(cpu_rng_state)
+                    if torch.cuda.is_available():
+                        torch.cuda.set_rng_state_all(cuda_rng_state)
+
                     x_B = self.simulation_step(
                         x_t=x_B, nn_out=nn_out_B, t=t, dt=dt, gt=gt_s, mask=mask,
                         simulation_step_params=sim_params,
-                    )
+                    )   # внутри снова torch.randn(...), но старт из s0 -> eps_B = eps_A
     
                 # ================================================================
                 # MLP-смешивание: применяем начиная с порога t >= mlp_t_threshold
