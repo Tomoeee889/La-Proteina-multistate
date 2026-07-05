@@ -8,110 +8,14 @@ dataset:
       motif_only: true
       motif_pdb_path: motif_benchmark_pdb_files/1prw_aa.pdb
       segment_order: A;B
-    MY_MOTIF_SC100:
+    1BCF_AA_single:
       atom_selection_mode: all_atom
-      contig_string: A71-107/0/B1-111/100/B112-121/0
-      motif_max_length: 258
-      motif_min_length: 258
-      motif_only: true
-      motif_pdb_path: motif_benchmark_pdb_files/ligand1.pdb
-      segment_order: A;B
-    MY_MOTIF_SC20:
-      atom_selection_mode: all_atom
-      contig_string: A71-107/0/B1-111/20/B112-121/0
-      motif_max_length: 178
-      motif_min_length: 178
-      motif_only: true
-      motif_pdb_path: motif_benchmark_pdb_files/ligand1.pdb
-      segment_order: A;B
-    MY_MOTIF_SC200:
-      atom_selection_mode: all_atom
-      contig_string: A71-107/0/B1-111/200/B112-121/0
-      motif_max_length: 358
-      motif_min_length: 358
-      motif_only: true
-      motif_pdb_path: motif_benchmark_pdb_files/ligand1.pdb
-      segment_order: A;B
-    MY_MOTIF_SC25:
-      atom_selection_mode: all_atom
-      contig_string: A71-107/0/B1-111/25/B112-121/0
-      motif_max_length: 183
-      motif_min_length: 183
-      motif_only: true
-      motif_pdb_path: motif_benchmark_pdb_files/ligand1.pdb
-      segment_order: A;B
-    MY_MOTIF_SC300:
-      atom_selection_mode: all_atom
-      contig_string: A71-107/0/B1-111/300/B112-121/0
-      motif_max_length: 458
-      motif_min_length: 458
-      motif_only: true
-      motif_pdb_path: motif_benchmark_pdb_files/ligand1.pdb
-      segment_order: A;B
-    MY_MOTIF_SC36:
-      atom_selection_mode: all_atom
-      contig_string: A71-107/0/B1-111/36/B112-121/0
-      motif_max_length: 194
-      motif_min_length: 194
-      motif_only: true
-      motif_pdb_path: motif_benchmark_pdb_files/ligand1.pdb
-      segment_order: A;B
-    MY_MOTIF_SC400:
-      atom_selection_mode: all_atom
-      contig_string: A71-107/0/B1-111/400/B112-121/0
-      motif_max_length: 558
-      motif_min_length: 558
-      motif_only: true
-      motif_pdb_path: motif_benchmark_pdb_files/ligand1.pdb
-      segment_order: A;B
-    MY_MOTIF_SC50:
-      atom_selection_mode: all_atom
-      contig_string: A71-107/0/B1-111/50/B112-121/0
-      motif_max_length: 208
-      motif_min_length: 208
-      motif_only: true
-      motif_pdb_path: motif_benchmark_pdb_files/ligand1.pdb
-      segment_order: A;B
-    MY_MOTIF_SC500:
-      atom_selection_mode: all_atom
-      contig_string: A71-107/0/B1-111/500/B112-121/0
-      motif_max_length: 658
-      motif_min_length: 658
-      motif_only: true
-      motif_pdb_path: motif_benchmark_pdb_files/ligand1.pdb
-      segment_order: A;B
-    MY_MOTIF_SC55:
-      atom_selection_mode: all_atom
-      contig_string: A71-107/0/B1-111/55/B112-121/0
-      motif_max_length: 213
-      motif_min_length: 213
-      motif_only: true
-      motif_pdb_path: motif_benchmark_pdb_files/ligand1.pdb
-      segment_order: A;B
-    MY_MOTIF_SC65:
-      atom_selection_mode: all_atom
-      contig_string: A71-107/0/B1-111/65/B112-121/0
-      motif_max_length: 223
-      motif_min_length: 223
-      motif_only: true
-      motif_pdb_path: motif_benchmark_pdb_files/ligand1.pdb
-      segment_order: A;B
-    MY_MOTIF_SC66:
-      atom_selection_mode: all_atom
-      contig_string: A71-107/0/B1-111/66/B112-121/0
-      motif_max_length: 224
-      motif_min_length: 224
-      motif_only: true
-      motif_pdb_path: motif_benchmark_pdb_files/ligand1.pdb
-      segment_order: A;B
-    MY_MOTIF_SC67:
-      atom_selection_mode: all_atom
-      contig_string: A71-107/0/B1-111/67/B112-121/0
-      motif_max_length: 225
-      motif_min_length: 225
-      motif_only: true
-      motif_pdb_path: motif_benchmark_pdb_files/ligand1.pdb
-      segment_order: A;B
+      contig_string: A1-9/31/A41-158/0
+      motif_max_length: 120
+      motif_min_length: 120
+      motif_only: false
+      motif_pdb_path: ./motifs/1bcf_aa.pdb
+      segment_order: A
     MY_MOTIF_SC75:
       atom_selection_mode: all_atom
       contig_string: A71-107/0/B1-111/75/B112-121/0

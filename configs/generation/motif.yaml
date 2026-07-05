@@ -14,7 +14,7 @@ dataset:
     min_len: null
     nres_lens: null
     step_len: null
-  nsamples: 10
+  nsamples: 50
 defaults:
 - motif_dict
 - _self_

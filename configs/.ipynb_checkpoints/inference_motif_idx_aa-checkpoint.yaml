@@ -1,16 +1,19 @@
 autoencoder_ckpt_path: ./checkpoints_laproteina/AE3_motif.ckpt
 ckpt_name: LD4_motif_idx_aa.ckpt
 defaults:
-- inference_base
-- generation: motif
-- _self_
+  - inference_base
+  - generation: motif
+  - _self_
+
 generation:
   args:
-    dual_path_alpha: 0.5
+    dual_path_alpha: 0.0  # Будет переопределено в скрипте на 1.0
+    mlp_t_threshold: 1.1
   dataset:
-    motif_task_name: MY_MOTIF_SC55
+    motif_task_name: 1BCF_AA_single  # <-- Должно совпадать с именем в motif_dict.yaml
   model:
     bb_ca:
       simulation_step_params:
         center_every_step: false
+
 run_name_: laproteina_motif_idx_aa

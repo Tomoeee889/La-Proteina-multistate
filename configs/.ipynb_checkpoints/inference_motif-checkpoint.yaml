@@ -10,7 +10,7 @@ generation:
     dual_path_alpha: 0.0  # Будет переопределено в скрипте на 1.0
     mlp_t_threshold: 1.1
   dataset:
-    motif_task_name: 1BCF_AA_single  # <-- Должно совпадать с именем в motif_dict.yaml
+    motif_task_name: 1BCF_AA_single  # Должно совпадать с именем в motif_dict.yaml
   model:
     bb_ca:
       simulation_step_params:

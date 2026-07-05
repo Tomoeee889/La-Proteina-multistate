@@ -1,20 +1,34 @@
 dataset:
   motif_dict_cfg:
-    TEST_DUALITY:
-      contig_string: A71-107/0/B1-111/100/B112-121/0
-      motif_pdb_path: motif_benchmark_pdb_files/ligand1.pdb
-      motif_only: True
-      motif_min_length: 258
-      motif_max_length: 258
-      segment_order: "A;B"
-      atom_selection_mode: "all_atom"
-        
-    
     1PRW_AA:
+      atom_selection_mode: all_atom
       contig_string: 5-20/A1-20/10-25/B1-20/5-20
-      motif_pdb_path: motif_benchmark_pdb_files/1prw_aa.pdb
-      motif_only: True
-      motif_min_length: 60
       motif_max_length: 105
-      segment_order: "A;B"
-      atom_selection_mode: "all_atom"
+      motif_min_length: 60
+      motif_only: true
+      motif_pdb_path: motif_benchmark_pdb_files/1prw_aa.pdb
+      segment_order: A;B
+    1BCF_AA_single:
+      atom_selection_mode: all_atom
+      contig_string: A1-9/31/A41-158/0
+      motif_max_length: 120
+      motif_min_length: 120
+      motif_only: false
+      motif_pdb_path: ./motifs/1bcf_aa.pdb
+      segment_order: A
+    MY_MOTIF_SC75:
+      atom_selection_mode: all_atom
+      contig_string: A71-107/0/B1-111/75/B112-121/0
+      motif_max_length: 233
+      motif_min_length: 233
+      motif_only: true
+      motif_pdb_path: motif_benchmark_pdb_files/ligand1.pdb
+      segment_order: A;B
+    TEST_DUALITY:
+      atom_selection_mode: all_atom
+      contig_string: A71-107/0/B1-111/100/B112-121/0
+      motif_max_length: 258
+      motif_min_length: 258
+      motif_only: true
+      motif_pdb_path: motif_benchmark_pdb_files/ligand1.pdb
+      segment_order: A;B
