@@ -7,7 +7,7 @@ cd "$(dirname "$0")" || exit 1
 export DATA_PATH=./data
 
 NUM_PAIRS=50
-OUTPUT_DIR="baselines/task3_conditional_large_sim_eps"
+OUTPUT_DIR="baselines/task3_conditional_large_default"
 
 # Motif parameters (same as Task 2)
 MOTIF_NAME="1BCF_AA_single"
