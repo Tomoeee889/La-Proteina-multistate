@@ -89,9 +89,10 @@ def find_flow_matcher(model):
     raise AttributeError("Could not find flow matcher with full_simulation method")
 
 
-def patch_full_simulation(model, noise_scale):
+def patch_full_simulation(model, noise_scale, sim_eps=True):
     """
     Monkey-patch full_simulation to inject init_noise_scale and disable MLP/mixing.
+    sim_eps: True = общий RNG (одинаковый шум), False = независимый шум.
     """
     fm = find_flow_matcher(model)
     logger.info(f"Found flow matcher: {type(fm).__name__}")
@@ -102,6 +103,7 @@ def patch_full_simulation(model, noise_scale):
         kwargs["dual_path_alpha"] = 1.0
         kwargs["mlp_mixer"] = None
         kwargs["mlp_t_threshold"] = 1.1
+        kwargs["sim_eps"] = sim_eps
         return original_full_sim(batch, *args, **kwargs)
 
     fm.full_simulation = patched_full_sim
@@ -214,6 +216,19 @@ def main():
         default=0,
         help="Job id for splitting",
     )
+    parser.add_argument(
+        "--sim_eps",
+        type=lambda x: x.lower() == "true",
+        default=True,
+        help="True: общий RNG (одинаковый шум для A и B), False: независимый шум",
+    )
+    parser.add_argument(
+        "--decode_mode",
+        type=str,
+        default="independent",
+        choices=["independent", "mixed"],
+        help="independent: decode(z_A,ca_A)+decode(z_B,ca_B) | mixed: z_cons→decode(z_cons,ca_A/B)",
+    )
     args = parser.parse_args()
 
     logger.add(
@@ -255,6 +270,11 @@ def main():
         "atom_selection_mode": "all_atom",
     }
 
+    # decode_mode и sim_eps — внутри struct(False), иначе упадёт
+    cfg.generation.args["decode_mode"] = args.decode_mode
+    cfg.generation.args["sim_eps"] = args.sim_eps
+    logger.info(f"decode_mode={args.decode_mode}, sim_eps={args.sim_eps}")
+
     OmegaConf.set_struct(cfg, True)
 
     L.seed_everything(cfg.seed + args.job_id)
@@ -263,7 +283,7 @@ def main():
     os.makedirs(output_path, exist_ok=True)
 
     model = load_model(cfg)
-    patch_full_simulation(model, args.noise_scale)
+    patch_full_simulation(model, args.noise_scale, sim_eps=args.sim_eps)
 
     # Create dataset - CSV will be created automatically inside GenDataset
     dataset = GenDataset(**cfg.generation.dataset)

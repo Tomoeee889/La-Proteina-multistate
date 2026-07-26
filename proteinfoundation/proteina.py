@@ -18,6 +18,10 @@ from proteinfoundation.flow_matching.product_space_flow_matcher import (
 )
 from proteinfoundation.nn.local_latents_transformer import LocalLatentsTransformer
 from proteinfoundation.nn.local_latents_transformer_unindexed import LocalLatentsTransformerMotifUidx
+try:
+    from proteinfoundation.nn.dual_stream_transformer import DualStreamTransformer
+except ImportError:
+    DualStreamTransformer = None  # недоступно без dual-stream файлов
 from proteinfoundation.partial_autoencoder.autoencoder import AutoEncoder
 from proteinfoundation.utils.coors_utils import nm_to_ang, trans_nm_to_atom37
 from proteinfoundation.utils.pdb_utils import (
@@ -146,6 +150,14 @@ class Proteina(L.LightningModule):
             self.nn = LocalLatentsTransformer(**cfg_exp.nn, latent_dim=self.latent_dim)
         elif cfg_exp.nn.name == "local_latents_transformer_motif_uidx":
             self.nn = LocalLatentsTransformerMotifUidx(**cfg_exp.nn, latent_dim=self.latent_dim)
+        elif cfg_exp.nn.name == "dual_stream_transformer":
+            if DualStreamTransformer is None:
+                raise ImportError(
+                    "dual_stream_transformer module not found. "
+                    "Copy proteinfoundation/nn/dual_stream_transformer.py and "
+                    "proteinfoundation/nn/modules/cross_attention.py to use this architecture."
+                )
+            self.nn = DualStreamTransformer(**cfg_exp.nn, latent_dim=self.latent_dim)
         else:
             raise IOError(f"Wrong nn selected for CAFlow {cfg_exp.nn.name}")
 
@@ -155,6 +167,63 @@ class Proteina(L.LightningModule):
         self.nparams = sum(p.numel() for p in self.nn.parameters() if p.requires_grad)
 
         self.nn_ag = None
+
+    @staticmethod
+    def remap_pretrained_state_dict(state_dict, model_state_dict_keys=None):
+        """
+        Ремаппинг ключей предобученного LocalLatentsTransformer чекпоинта
+        в формат DualStreamTransformer.
+
+        Соответствие слоёв:
+          transformer_layers.0-7  → shared_layers.0-7
+          transformer_layers.8-10 → seq_layers.0-2  (копия)
+          transformer_layers.8-10 → struct_layers.0-2  (копия)
+          transformer_layers.11-13 → отбрасываются
+
+        Остальные ключи (init_repr_factory, cond_factory, pair_repr_builder,
+        transition_c_*, local_latents_linear) грузятся напрямую без ремаппинга.
+        ca_linear НЕ грузится (вход изменился с 768 на 1536).
+        """
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            # Ремаппинг transformer_layers → shared/seq/struct
+            # Формат ключа: nn.transformer_layers.{idx}.{submodule}...
+            #   parts[0]="nn", parts[1]="transformer_layers", parts[2]=idx, parts[3]=submodule...
+            if k.startswith("nn.transformer_layers."):
+                parts = k.split(".")
+                layer_idx = int(parts[2])  # индекс слоя
+
+                if layer_idx < 8:
+                    # → shared_layers (индекс сохраняется)
+                    parts[1] = "shared_layers"
+                    new_state_dict[".".join(parts)] = v
+
+                elif 8 <= layer_idx <= 10:
+                    # → seq_layers и struct_layers (копия в оба, индекс = layer_idx - 8)
+                    seq_idx = layer_idx - 8
+
+                    # В seq_layers
+                    parts_seq = parts.copy()
+                    parts_seq[1] = "seq_layers"
+                    parts_seq[2] = str(seq_idx)
+                    new_state_dict[".".join(parts_seq)] = v
+
+                    # В struct_layers
+                    parts_struct = parts.copy()
+                    parts_struct[1] = "struct_layers"
+                    parts_struct[2] = str(seq_idx)
+                    new_state_dict[".".join(parts_struct)] = v
+
+                # слои 11-13 отбрасываются
+            elif "ca_linear" in k:
+                # ca_linear НЕ грузится: вход изменился с 768 на 1536 (асимметричный concat)
+                continue
+            else:
+                # Остальные ключи — как есть (init_repr_factory, cond_factory,
+                # pair_repr_builder, transition_c_*, local_latents_linear)
+                new_state_dict[k] = v
+
+        return new_state_dict
 
     def load_autoencoder(self, cfg_exp, freeze_params=True):
         """Loads autoencoder, if required."""
@@ -182,6 +251,47 @@ class Proteina(L.LightningModule):
             [p for p in self.parameters() if p.requires_grad], lr=self.cfg_exp.opt.lr
         )
         return optimizer
+
+    def on_train_batch_start(self):
+        """
+        Заморозка/разморозка общих слоёв для dual-stream fine-tuning.
+        Первые freeze_shared_steps шагов общие слои 0-7 заморожены,
+        затем размораживаются для совместного fine-tuning.
+        """
+        freeze_steps = self.cfg_exp.training.get("freeze_shared_steps", 0)
+        if freeze_steps <= 0:
+            return
+
+        if not hasattr(self, "_shared_frozen"):
+            self._shared_frozen = False
+
+        current_step = self.global_step
+
+        if current_step < freeze_steps and not self._shared_frozen:
+            # Заморозить общие слои
+            if hasattr(self.nn, "shared_layers"):
+                for param in self.nn.shared_layers.parameters():
+                    param.requires_grad = False
+                if self.nn.shared_pair_update_layers is not None:
+                    for layer in self.nn.shared_pair_update_layers:
+                        if layer is not None:
+                            for param in layer.parameters():
+                                param.requires_grad = False
+                self._shared_frozen = True
+                logger.info(f"Froze shared layers (step {current_step}, freeze for {freeze_steps} steps)")
+
+        elif current_step >= freeze_steps and self._shared_frozen:
+            # Разморозить общие слои
+            if hasattr(self.nn, "shared_layers"):
+                for param in self.nn.shared_layers.parameters():
+                    param.requires_grad = True
+                if self.nn.shared_pair_update_layers is not None:
+                    for layer in self.nn.shared_pair_update_layers:
+                        if layer is not None:
+                            for param in layer.parameters():
+                                param.requires_grad = True
+                self._shared_frozen = False
+                logger.info(f"Unfroze shared layers (step {current_step})")
 
     def on_save_checkpoint(self, checkpoint):
         """Adds additional variables to checkpoint."""
@@ -267,12 +377,19 @@ class Proteina(L.LightningModule):
         """
         Computes training loss for batch of samples.
 
+        If multistate training is enabled (cfg_exp.training.use_multistate),
+        delegates to training_step_multistate for dual-stream fine-tuning.
+
         Args:
             batch: Data batch.
 
         Returns:
             Training loss averaged over batch dimension.
         """
+        # Check if multistate training is enabled
+        if self.cfg_exp.training.get("use_multistate", False):
+            return self.training_step_multistate(batch, batch_idx)
+
         val_step = batch_idx == -1  # validation step is indicated with batch_idx -1
         log_prefix = "validation_loss" if val_step else "train"
 
@@ -389,6 +506,83 @@ class Proteina(L.LightningModule):
         if n_recycle == 0:
             return 0
         return random.randint(0, n_recycle)  # 0 and n_recycle included
+
+    def training_step_multistate(self, batch: Dict, batch_idx: int):
+        """
+        Multistate training step for dual-stream fine-tuning.
+
+        The batch contains B proteins × K conformations, flattened to [B*K, n, ...].
+        The batch dict carries "n_conformations" = K.
+
+        Loss = alpha * FM_loss + beta * seq_consistency + gamma * diversity
+
+        Args:
+            batch: Data batch with K conformations per protein.
+            batch_idx: Batch index.
+
+        Returns:
+            Combined training loss (scalar).
+        """
+        val_step = batch_idx == -1
+        log_prefix = "validation_loss" if val_step else "train"
+
+        K = batch.get("n_conformations", 1)
+
+        # Add clean samples for all data modes
+        batch = self.add_clean_samples(batch)
+
+        # Corrupt the batch (adds x_1, t, x_0, x_t, mask)
+        batch = self.fm.corrupt_batch(batch)
+        bs, n = batch["mask"].shape  # bs = B*K
+
+        # Handle conditioning
+        batch = self.handle_self_cond(batch)
+        batch = self.handle_folding_n_inverse_folding(batch)
+
+        n_recycle = self.handle_recycling()
+
+        # Forward pass
+        nn_out = self.call_nn(batch, n_recycle=n_recycle)
+
+        # Multistate loss
+        multistate_cfg = self.cfg_exp.training.get("multistate_loss", {})
+        losses = self.fm.compute_multistate_loss(
+            batch=batch,
+            nn_out=nn_out,
+            autoencoder=self.autoencoder,
+            alpha=multistate_cfg.get("alpha", 1.0),
+            beta=multistate_cfg.get("beta", 0.5),
+            gamma=multistate_cfg.get("gamma", 0.1),
+            diversity_margin_nm=multistate_cfg.get("diversity_margin_nm", 0.2),
+        )
+
+        # Log individual losses
+        self.log_losses(bs=bs, losses=losses, log_prefix=log_prefix, batch=batch)
+
+        # Total loss
+        train_loss = sum(
+            [torch.mean(losses[k]) for k in losses if "_justlog" not in k]
+        )
+
+        self.log(
+            f"{log_prefix}/multistate_loss",
+            train_loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            batch_size=bs,
+            sync_dist=True,
+            add_dataloader_idx=False,
+        )
+
+        if not val_step:
+            self.log_train_loss_n_prog_bar(bs, train_loss)
+            self.update_n_log_flops(bs, n)
+            self.update_n_log_nsamples_processed(bs)
+            self.log_nparams()
+
+        return train_loss
 
     def handle_folding_n_inverse_folding(self, batch: Dict) -> Dict:
         """
@@ -673,13 +867,18 @@ class Proteina(L.LightningModule):
         # Порог t, начиная с которого MLP применяется в цикле.
         # Если не задан в конфиге — ставим 1.1, т.е. MLP только после цикла (старое поведение).
         mlp_t_threshold = self.inf_cfg.args.get("mlp_t_threshold", 1.1)
-        
+        sim_eps         = self.inf_cfg.args.get("sim_eps", True)  # общий RNG по умолчанию
+        # Режим декодирования dual-path:
+        #   "independent" — decode(z_A, ca_A) и decode(z_B, ca_B), пути не смешиваются
+        #   "mixed"       — z_cons = mlp_mixer(...) или (z_A+z_B)/2, decode(z_cons, ca_A/B)
+        decode_mode     = self.inf_cfg.args.get("decode_mode", "independent")
+
         fn_predict_for_sampling = partial(
             self.predict_for_sampling, n_recycle=self.inf_cfg.get("n_recycle", 0)
         )
-    
+
         mlp_mixer = getattr(self, "mlp_mixer", None)
-    
+
         gen_samples, extra_info = self.fm.full_simulation(
             batch=batch,
             predict_for_sampling=fn_predict_for_sampling,
@@ -696,44 +895,61 @@ class Proteina(L.LightningModule):
             init_noise_scale=0.0,
             mlp_mixer=mlp_mixer,           # <-- передаём MLP
             mlp_t_threshold=mlp_t_threshold,  # <-- передаём порог
+            sim_eps=sim_eps,               # <-- передаём режим шума
         )
-    
+
         mask          = extra_info["mask"]
         x_B           = extra_info.get("x_B")
         scaffold_mask = extra_info.get("scaffold_mask")
-    
+
         # Если dual path активен
         if dual_path_alpha > 0.0 and x_B is not None:
             z_A  = gen_samples["local_latents"]
             ca_A = gen_samples["bb_ca"]
             z_B  = x_B["local_latents"]
             ca_B = x_B["bb_ca"]
-    
+
             with torch.no_grad():
-                # Если MLP уже применялся в цикле (mlp_t_threshold <= 1.0),
-                # то z_A == z_B == z_cons — финальное смешивание необязательно,
-                # но для надёжности делаем его снова.
-                if mlp_mixer is not None:
-                    z_cons = mlp_mixer(z_A - z_B, z_A, z_B)
-                else:
-                    if scaffold_mask is not None:
-                        sm = scaffold_mask[..., None]
-                        z_avg = dual_path_alpha * z_A + (1.0 - dual_path_alpha) * z_B
-                        z_cons = torch.where(sm, z_avg, z_A)
+                if decode_mode == "mixed":
+                    # --- Смешанный режим (оригинальный): общий латент, разные CA ---
+                    # Точно воспроизводит оригинальный predict_step:
+                    #   MLP-миксер (если загружен) или взвешенное смешивание
+                    #   с scaffold_mask handling
+                    if mlp_mixer is not None:
+                        z_cons = mlp_mixer(z_A - z_B, z_A, z_B)
                     else:
-                        z_cons = dual_path_alpha * z_A + (1.0 - dual_path_alpha) * z_B
-    
-            sample_prots_A = self.sample_formatting(
-                x={"local_latents": z_cons, "bb_ca": ca_A},
-                extra_info=extra_info,
-                ret_mode="coors37_n_aatype",
-            )
-            sample_prots_B = self.sample_formatting(
-                x={"local_latents": z_cons, "bb_ca": ca_B},
-                extra_info=extra_info,
-                ret_mode="coors37_n_aatype",
-            )
-    
+                        if scaffold_mask is not None:
+                            sm = scaffold_mask[..., None]
+                            z_avg = dual_path_alpha * z_A + (1.0 - dual_path_alpha) * z_B
+                            z_cons = torch.where(sm, z_avg, z_A)
+                        else:
+                            z_cons = dual_path_alpha * z_A + (1.0 - dual_path_alpha) * z_B
+
+                    sample_prots_A = self.sample_formatting(
+                        x={"local_latents": z_cons, "bb_ca": ca_A},
+                        extra_info=extra_info,
+                        ret_mode="coors37_n_aatype",
+                    )
+                    sample_prots_B = self.sample_formatting(
+                        x={"local_latents": z_cons, "bb_ca": ca_B},
+                        extra_info=extra_info,
+                        ret_mode="coors37_n_aatype",
+                    )
+                else:
+                    # --- Независимый режим (новый): каждый путь декодируется сам ---
+                    # decode(z_A, ca_A) и decode(z_B, ca_B).
+                    # Последовательности могут отличаться — это честный результат.
+                    sample_prots_A = self.sample_formatting(
+                        x={"local_latents": z_A, "bb_ca": ca_A},
+                        extra_info=extra_info,
+                        ret_mode="coors37_n_aatype",
+                    )
+                    sample_prots_B = self.sample_formatting(
+                        x={"local_latents": z_B, "bb_ca": ca_B},
+                        extra_info=extra_info,
+                        ret_mode="coors37_n_aatype",
+                    )
+
             return [
                 (
                     sample_prots_A["coors"][i], sample_prots_A["residue_type"][i],
@@ -741,7 +957,7 @@ class Proteina(L.LightningModule):
                 )
                 for i in range(sample_prots_A["coors"].shape[0])
             ]
-    
+
         # Дефолт: один путь
         sample_prots = self.sample_formatting(
             x=gen_samples, extra_info=extra_info, ret_mode="coors37_n_aatype"

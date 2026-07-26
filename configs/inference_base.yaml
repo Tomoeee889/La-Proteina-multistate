@@ -26,6 +26,8 @@ generation:
     save_trajectory_every: 0 # at which step interval to save trajectory snapshots of generation, 0 for no saving
     dual_path_alpha: 0.9 # for dual-mix generation
     mlp_t_threshold: 0.9
+    sim_eps: True  # True: общий RNG (одинаковый шум на шаге для A и B), False: независимый шум
+    decode_mode: "independent"  # "independent": decode(z_A,ca_A)+decode(z_B,ca_B) | "mixed": оригинальное смешивание z_cons=dual_path_alpha*z_A+(1-alpha)*z_B
 
     
   # Model-specific sampling arguments

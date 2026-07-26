@@ -288,6 +288,158 @@ class ProductSpaceFlowMatcher(L.LightningModule):
 
         return losses
 
+    def compute_multistate_loss(
+        self,
+        batch: Dict,
+        nn_out: Dict[str, Dict[str, Tensor]],
+        autoencoder=None,
+        alpha: float = 1.0,
+        beta: float = 0.5,
+        gamma: float = 0.1,
+        diversity_margin_nm: float = 0.2,
+    ) -> Dict[str, Float[Tensor, "*"]]:
+        """
+        Computes multistate training loss for dual-stream fine-tuning.
+
+        The batch contains B proteins, each with K conformations, flattened to
+        [B*K, n, ...]. The batch dict carries "n_conformations" = K so we can
+        reshape.
+
+        Loss = alpha * FM_loss
+             + beta  * seq_consistency_loss
+             + gamma * diversity_loss
+
+        Args:
+            batch: Training batch with x_1, x_0, x_t, t, mask, n_conformations.
+            nn_out: Output of the dual-stream network.
+            autoencoder: AutoEncoder module (for decoding latents to seq_logits).
+            alpha: Weight for flow matching loss.
+            beta: Weight for sequence consistency loss.
+            gamma: Weight for structural diversity loss.
+            diversity_margin_nm: Minimum RMSD (nm) between conformations of the
+                same protein. Pairs closer than this are penalised.
+
+        Returns:
+            Dict of loss terms, each with shape [B] (per-protein, before mean reduction).
+        """
+        K = batch.get("n_conformations", 1)
+        mask = batch["mask"]  # [B*K, n]
+        bs_total = mask.shape[0]
+        B = bs_total // K
+        n = mask.shape[1]
+
+        # ── 1. Flow matching loss (standard, per-conformation) ──────────
+        fm_loss = self.compute_fm_loss(batch=batch, nn_out=nn_out)
+        # Each data_mode loss has shape [B*K]
+        # Reshape to [B, K] and average over K
+        fm_loss_per_protein = {}
+        for dm in self.data_modes:
+            loss_flat = fm_loss[dm]  # [B*K]
+            loss_reshape = loss_flat.view(B, K)  # [B, K]
+            fm_loss_per_protein[dm] = loss_reshape.mean(dim=-1)  # [B]
+
+        # ── 2. Sequence consistency loss ─────────────────────────────────
+        # The decoder maps (z_latent, ca_coors) → seq_logits.
+        # For multistate design, all K conformations of the same protein should
+        # decode to the SAME sequence. We enforce this by computing seq_logits
+        # for each conformation and minimising the pairwise KL divergence.
+        seq_consistency_loss = torch.zeros(B, device=mask.device)
+
+        if autoencoder is not None and beta > 0 and "local_latents" in self.data_modes:
+            # Get predicted clean samples for each conformation
+            nn_out_with_pred = self.nn_out_add_clean_sample_prediction(
+                batch=batch, nn_out=nn_out
+            )
+            z_pred = nn_out_with_pred["local_latents"]["x_1"]  # [B*K, n, d_latent]
+            ca_pred = nn_out_with_pred["bb_ca"]["x_1"]         # [B*K, n, 3]
+
+            # Decode each conformation to get seq_logits
+            decode_batch = {
+                "mask": mask,
+                "mask_dict": batch.get("mask_dict", {"coords": mask[..., None, None].expand(-1, -1, 37, 3)}),
+            }
+            # We need to pass z_latent and ca_coors_nm to the decoder
+            # The autoencoder.decode expects (z_latent, ca_coors_nm, mask)
+            decoded = autoencoder.decode(
+                z_latent=z_pred,
+                ca_coors_nm=ca_pred,
+                mask=mask,
+            )
+            seq_logits = decoded["seq_logits"]  # [B*K, n, 20]
+
+            # Reshape to [B, K, n, 20]
+            seq_logits_reshape = seq_logits.view(B, K, n, -1)
+
+            # Compute pairwise KL divergence between conformations
+            # KL(p_i || p_j) where p = softmax(seq_logits)
+            log_p = torch.log_softmax(seq_logits_reshape, dim=-1)  # [B, K, n, 20]
+            p = torch.exp(log_p)  # [B, K, n, 20]
+
+            # Average KL over all pairs (i, j) where i != j
+            # For efficiency: compute mean log_p and mean p, then KL(mean || mean)
+            # This is a simpler proxy that still encourages consistency
+            mean_log_p = log_p.mean(dim=1)  # [B, n, 20]
+            mean_p = p.mean(dim=1)          # [B, n, 20]
+
+            # KL(p_i || mean_p) for each i, averaged
+            kl_per_conf = (p * (log_p - mean_log_p.unsqueeze(1))).sum(dim=-1)  # [B, K, n]
+            kl_per_protein = kl_per_conf.mean(dim=1)  # [B, K, n] → [B, n] (mean over K)
+            # Mask and average over residues
+            mask_reshape = mask.view(B, K, n)[:, 0]  # [B, n] — same mask for all confs
+            seq_consistency_loss = (kl_per_protein * mask_reshape).sum(dim=-1) / mask_reshape.sum(dim=-1).clamp(min=1)  # [B]
+
+        # ── 3. Structural diversity loss ─────────────────────────────────
+        # Encourage conformations to be structurally diverse: penalise pairs
+        # with RMSD < diversity_margin_nm.
+        diversity_loss = torch.zeros(B, device=mask.device)
+
+        if gamma > 0 and "bb_ca" in self.data_modes:
+            nn_out_with_pred = self.nn_out_add_clean_sample_prediction(
+                batch=batch, nn_out=nn_out
+            )
+            ca_pred = nn_out_with_pred["bb_ca"]["x_1"]  # [B*K, n, 3]
+
+            # Reshape to [B, K, n, 3]
+            ca_reshape = ca_pred.view(B, K, n, 3)
+            mask_reshape = mask.view(B, K, n)  # [B, K, n]
+
+            # Compute pairwise RMSD between conformations of the same protein
+            # Use the first conformation as reference for efficiency
+            ca_ref = ca_reshape[:, 0:1, :, :]  # [B, 1, n, 3]
+            mask_ref = mask_reshape[:, 0:1, :]  # [B, 1, n]
+
+            # Center each conformation
+            ca_centered = ca_reshape - (ca_reshape * mask_reshape[..., None]).sum(dim=2, keepdim=True) / mask_reshape.sum(dim=2, keepdim=True).clamp(min=1)[..., None]
+            ca_ref_centered = ca_ref - (ca_ref * mask_ref[..., None]).sum(dim=2, keepdim=True) / mask_ref.sum(dim=2, keepdim=True).clamp(min=1)[..., None]
+
+            # RMSD to reference for each conformation
+            diff = ca_centered - ca_ref_centered  # [B, K, n, 3]
+            sq_dist = (diff ** 2).sum(dim=-1)  # [B, K, n]
+            rmsd_sq = (sq_dist * mask_reshape).sum(dim=-1) / mask_reshape.sum(dim=-1).clamp(min=1)  # [B, K]
+            rmsd = torch.sqrt(rmsd_sq + 1e-8)  # [B, K]
+
+            # Hinge loss: penalise if RMSD < margin
+            # margin - rmsd > 0 means too similar → penalise
+            if K > 1:
+                hinge = torch.clamp(diversity_margin_nm - rmsd[:, 1:], min=0)  # [B, K-1]
+                diversity_loss = hinge.mean(dim=-1)  # [B]
+            # else: diversity_loss stays zeros (K=1 → no pairs to compare)
+
+        # ── Combine ──────────────────────────────────────────────────────
+        losses = {}
+        for dm in self.data_modes:
+            losses[f"fm_{dm}"] = alpha * fm_loss_per_protein[dm]
+        losses["seq_consistency"] = beta * seq_consistency_loss
+        losses["diversity"] = gamma * diversity_loss
+
+        # Also log the raw (unweighted) values
+        for dm in self.data_modes:
+            losses[f"fm_{dm}_raw_justlog"] = fm_loss_per_protein[dm]
+        losses["seq_consistency_raw_justlog"] = seq_consistency_loss
+        losses["diversity_raw_justlog"] = diversity_loss
+
+        return losses
+
     def simulation_step(
         self,
         x_t: Dict[str, torch.Tensor],
@@ -521,9 +673,12 @@ class ProductSpaceFlowMatcher(L.LightningModule):
         init_latent_B=None,
         mlp_mixer=None,               # <-- НОВЫЙ: сам MLP объект (nn.Module)
         mlp_t_threshold: float = 1.1, # <-- НОВЫЙ: порог t (по умолчанию 1.1 → никогда не срабатывает)
+        sim_eps: bool = True,         # True: общий RNG (одинаковый шум на шаге), False: независимый шум
     ) -> Tuple[Dict, Dict]:
         """
         Dual path flow matching с опциональным MLP-смешиванием начиная с порога t.
+        sim_eps: если True, оба пути получают одинаковый шум на каждом шаге Эйлера
+                 (RNG state save/restore). Если False — независимый шум.
         """
         for key, value in batch.items():
             if isinstance(value, torch.Tensor) and value.dim() > 0 and value.size(0) == 1:
@@ -625,42 +780,34 @@ class ProductSpaceFlowMatcher(L.LightningModule):
                     )
                     x_1_pred_B = self.nn_out_to_clean_sample_prediction(batch=batch_B, nn_out=nn_out_B)
     
-                # # Шаг Эйлера
-
-                # sim_params = {dm: sampling_model_args[dm]["simulation_step_params"] for dm in self.data_modes}
-
-                # # "Сфотографировали" состояние генератора ДО шага A -> это s0
-                # if dual_enabled:
-                #     cpu_rng_state = torch.get_rng_state()
-                #     if torch.cuda.is_available():
-                #         cuda_rng_state = torch.cuda.get_rng_state_all()
-
-                # x = self.simulation_step(
-                #     x_t=x, nn_out=nn_out, t=t, dt=dt, gt=gt_s, mask=mask,
-                #     simulation_step_params=sim_params,
-                # )   # внутри был torch.randn(...): s0 -> s1, использовался eps_A
-
-                # if dual_enabled:
-                #     # "Отмотали" генератор обратно в s0
-                #     torch.set_rng_state(cpu_rng_state)
-                #     if torch.cuda.is_available():
-                #         torch.cuda.set_rng_state_all(cuda_rng_state)
-
-                #     x_B = self.simulation_step(
-                #         x_t=x_B, nn_out=nn_out_B, t=t, dt=dt, gt=gt_s, mask=mask,
-                #         simulation_step_params=sim_params,
-                #     )   # внутри снова torch.randn(...), но старт из s0 -> eps_B = eps_A
                 # Шаг Эйлера
+
                 sim_params = {dm: sampling_model_args[dm]["simulation_step_params"] for dm in self.data_modes}
+
+                # "Сфотографировали" состояние генератора ДО шага A -> это s0
+                if dual_enabled and sim_eps:
+                    # sim_eps=True: сохраняем RNG, чтобы path B получил тот же шум
+                    cpu_rng_state = torch.get_rng_state()
+                    if torch.cuda.is_available():
+                        cuda_rng_state = torch.cuda.get_rng_state_all()
+
                 x = self.simulation_step(
                     x_t=x, nn_out=nn_out, t=t, dt=dt, gt=gt_s, mask=mask,
                     simulation_step_params=sim_params,
                 )
+
                 if dual_enabled:
+                    if sim_eps:
+                        # sim_eps=True: отматываем RNG, чтобы eps_B = eps_A
+                        torch.set_rng_state(cpu_rng_state)
+                        if torch.cuda.is_available():
+                            torch.cuda.set_rng_state_all(cuda_rng_state)
+
                     x_B = self.simulation_step(
                         x_t=x_B, nn_out=nn_out_B, t=t, dt=dt, gt=gt_s, mask=mask,
                         simulation_step_params=sim_params,
                     )
+                    # sim_eps=False: RNG не отматывается → path B получает независимый шум
     
                 # ================================================================
                 # MLP-смешивание: применяем начиная с порога t >= mlp_t_threshold
