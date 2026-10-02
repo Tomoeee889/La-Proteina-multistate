@@ -1,0 +1,13 @@
+/var/spool/slurmd/job25435/slurm_script: line 25: 129670 Illegal instruction     mmseqs version
+INFO:colabfold.mmseqs.search:Running /trinity/shared/software/mmseqs/cpu/mmseqs/bin/mmseqs createdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/query.fas /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/qdb --shuffle 0 --dbtype 1
+Traceback (most recent call last):
+  File "/data/home/golovin/envs/envs/colabfold/bin/colabfold_search", line 8, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/trinity/home/golovin/envs/envs/colabfold/lib/python3.12/site-packages/colabfold/mmseqs/search.py", line 449, in main
+    run_mmseqs(
+  File "/trinity/home/golovin/envs/envs/colabfold/lib/python3.12/site-packages/colabfold/mmseqs/search.py", line 46, in run_mmseqs
+    subprocess.check_call([mmseqs] + params)
+  File "/trinity/home/golovin/envs/envs/colabfold/lib/python3.12/subprocess.py", line 413, in check_call
+    raise CalledProcessError(retcode, cmd)
+subprocess.CalledProcessError: Command '[PosixPath('/trinity/shared/software/mmseqs/cpu/mmseqs/bin/mmseqs'), 'createdb', PosixPath('/trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/query.fas'), PosixPath('/trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/qdb'), '--shuffle', '0', '--dbtype', '1']' died with <Signals.SIGILL: 4>.

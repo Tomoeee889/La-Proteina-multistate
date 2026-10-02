@@ -1,0 +1,581 @@
+===== colabfold_search 2026-09-21T15:03:01+03:00 host=node36.cluster =====
+fasta=/trinity/home/golovin/ipermyakov/allosteric/bioemu/inputs/baselines_proteinmpnn_seqs.fasta
+nseq=5402
+8cc5ce367b5638c4306c2d7cfc652dd099a4643f
+createdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/query.fas /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/qdb --shuffle 0 --dbtype 1 
+
+Converting sequences
+[
+Time for merging to qdb_h: 0h 0m 0s 3ms
+Time for merging to qdb: 0h 0m 0s 2ms
+Database type: Aminoacid
+Time for processing: 0h 0m 0s 75ms
+Create directory /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp
+search /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/qdb /data/home/golovin/progs/database/uniref30_2302_db /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp --threads 40 --num-iterations 3 --db-load-mode 0 -a -e 0.1 --max-seqs 10000 --prefilter-mode 0 --k-score 'seq:96,prof:80' 
+
+prefilter /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/qdb /data/home/golovin/progs/database/uniref30_2302_db /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/pref_0 --sub-mat 'aa:blosum62.out,nucl:nucleotide.out' --seed-sub-mat 'aa:VTML80.out,nucl:nucleotide.out' -s 5.7 -k 0 --target-search-mode 0 --k-score seq:2147483647,prof:2147483647 --alph-size aa:21,nucl:5 --max-seq-len 65535 --max-seqs 10000 --split 0 --split-mode 2 --split-memory-limit 0 -c 0 --cov-mode 0 --comp-bias-corr 1 --comp-bias-corr-scale 1 --diag-score 1 --exact-kmer-matching 0 --mask 1 --mask-prob 0.9 --mask-lower-case 0 --mask-n-repeat 0 --min-ungapped-score 15 --add-self-matches 0 --spaced-kmer-mode 1 --db-load-mode 0 --pca substitution:1.100,context:1.400 --pcb substitution:4.100,context:5.800 --threads 40 --compressed 0 -v 3 
+
+Query database size: 5402 type: Aminoacid
+Estimated memory consumption: 136G
+Target database size: 36293491 type: Aminoacid
+Index table k-mer threshold: 122 at k-mer size 7 
+Index table: counting k-mers
+[=================================================================] 36.29M 1m 48s 501ms
+Index table: Masked residues: 342898260
+Index table: fill
+[=================================================================] 36.29M 1m 53s 553ms
+Index statistics
+Entries:          7781341201
+DB size:          54290 MB
+Avg k-mer size:   6.079173
+Top 10 k-mers
+    LAMHETP	17746
+    FLNSHRT	14675
+    YTGTGKG	14518
+    GPGGKLL	12455
+    GPGGKLA	11739
+    KSFANHE	11589
+    AAAAAAA	11561
+    RQLNLNA	10914
+    GRDQVRG	10712
+    LDDFKND	10537
+Time for index table init: 0h 4m 2s 745ms
+Process prefiltering step 1 of 1
+
+k-mer similarity threshold: 122
+Starting prefiltering scores calculation (step 1 of 1)
+Query db start 1 to 5402
+Target db start 1 to 36293491
+[=================================================================] 5.40K 10s 542ms
+
+713.762463 k-mers per position
+1038138 DB matches per sequence
+0 overflows
+8787 sequences passed prefiltering per query sequence
+10000 median result list length
+0 sequences with 0 size result lists
+Time for merging to pref_0: 0h 0m 0s 102ms
+Time for processing: 0h 4m 30s 378ms
+align /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/qdb /data/home/golovin/progs/database/uniref30_2302_db /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/pref_0 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/aln_0 --sub-mat 'aa:blosum62.out,nucl:nucleotide.out' -a 1 --alignment-mode 2 --alignment-output-mode 0 --wrapped-scoring 0 -e 0.1 --min-seq-id 0 --min-aln-len 0 --seq-id-mode 0 --alt-ali 0 -c 0 --cov-mode 0 --max-seq-len 65535 --comp-bias-corr 1 --comp-bias-corr-scale 1 --max-rejected 2147483647 --max-accept 2147483647 --add-self-matches 0 --db-load-mode 0 --pca substitution:1.100,context:1.400 --pcb substitution:4.100,context:5.800 --score-bias 0 --realign 1 --realign-score-bias -0.2 --realign-max-seqs 2147483647 --corr-score-weight 0 --gap-open aa:11,nucl:5 --gap-extend aa:1,nucl:2 --zdrop 40 --threads 40 --compressed 0 -v 3 
+
+Compute score only
+Query database size: 5402 type: Aminoacid
+Target database size: 36293491 type: Aminoacid
+Calculation of alignments
+[=================================================================] 5.40K 1m 4s 281ms
+Time for merging to aln_0: 0h 0m 0s 76ms
+47470061 alignments calculated
+488844 sequence pairs passed the thresholds (0.010298 of overall calculated)
+90.493149 hits per query sequence
+Time for processing: 0h 1m 7s 677ms
+result2profile /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/qdb /data/home/golovin/progs/database/uniref30_2302_db /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/aln_0 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/profile_0 --sub-mat 'aa:blosum62.out,nucl:nucleotide.out' -e 0.1 --mask-profile 1 --e-profile 0.1 --comp-bias-corr 1 --comp-bias-corr-scale 1 --wg 0 --allow-deletion 0 --filter-msa 1 --filter-min-enable 0 --max-seq-id 0.9 --qid '0.0' --qsc -20 --cov 0 --diff 1000 --pseudo-cnt-mode 0 --pca substitution:1.100,context:1.400 --pcb substitution:4.100,context:5.800 --db-load-mode 0 --gap-open aa:11,nucl:5 --gap-extend aa:1,nucl:2 --threads 40 --compressed 0 -v 3 --profile-output-mode 0 
+
+Query database size: 5402 type: Aminoacid
+Target database size: 36293491 type: Aminoacid
+[=================================================================] 5.40K 1s 85ms
+Time for merging to profile_0: 0h 0m 0s 285ms
+Time for processing: 0h 0m 4s 316ms
+prefilter /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/profile_0 /data/home/golovin/progs/database/uniref30_2302_db /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/pref_tmp_1 --sub-mat 'aa:blosum62.out,nucl:nucleotide.out' --seed-sub-mat 'aa:VTML80.out,nucl:nucleotide.out' -s 5.7 -k 0 --target-search-mode 0 --k-score seq:2147483647,prof:2147483647 --alph-size aa:21,nucl:5 --max-seq-len 65535 --max-seqs 10000 --split 0 --split-mode 2 --split-memory-limit 0 -c 0 --cov-mode 0 --comp-bias-corr 1 --comp-bias-corr-scale 1 --diag-score 1 --exact-kmer-matching 0 --mask 1 --mask-prob 0.9 --mask-lower-case 0 --mask-n-repeat 0 --min-ungapped-score 15 --add-self-matches 0 --spaced-kmer-mode 1 --db-load-mode 0 --pca substitution:1.100,context:1.400 --pcb substitution:4.100,context:5.800 --threads 40 --compressed 0 -v 3 
+
+Query database size: 5402 type: Profile
+Estimated memory consumption: 136G
+Target database size: 36293491 type: Aminoacid
+Index table k-mer threshold: 0 at k-mer size 7 
+Index table: counting k-mers
+[=================================================================] 36.29M 1m 35s 781ms
+Index table: Masked residues: 426912248
+Index table: fill
+[=================================================================] 36.29M 1m 49s 997ms
+Index statistics
+Entries:          7695820087
+DB size:          53801 MB
+Avg k-mer size:   6.012359
+Top 10 k-mers
+    LAMHETP	17723
+    FLNSHRT	14660
+    YTGTGKG	14511
+    GPGGKLL	12458
+    GPGGKLA	11733
+    KSFANHE	11574
+    RQLNLNA	10912
+    GRDQVRG	10710
+    LDDFKND	10538
+    IDDFKND	10378
+Time for index table init: 0h 3m 44s 918ms
+Process prefiltering step 1 of 1
+
+k-mer similarity threshold: 110
+Starting prefiltering scores calculation (step 1 of 1)
+Query db start 1 to 5402
+Target db start 1 to 36293491
+[=================================================================] 5.40K 12s 447ms
+
+1430.585453 k-mers per position
+982494 DB matches per sequence
+0 overflows
+9191 sequences passed prefiltering per query sequence
+10000 median result list length
+0 sequences with 0 size result lists
+Time for merging to pref_tmp_1: 0h 0m 0s 82ms
+Time for processing: 0h 4m 7s 586ms
+subtractdbs /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/pref_tmp_1 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/aln_0 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/pref_1 --threads 40 --e-profile 0.1 -e 0.1 --compressed 0 -v 3 
+
+[=================================================================] 5.40K 1s 148ms
+Time for merging to pref_1: 0h 0m 0s 88ms
+Time for processing: 0h 0m 8s 903ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/pref_tmp_1 
+
+Time for processing: 0h 0m 0s 103ms
+align /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/profile_0 /data/home/golovin/progs/database/uniref30_2302_db /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/pref_1 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/aln_tmp_1 --sub-mat 'aa:blosum62.out,nucl:nucleotide.out' -a 1 --alignment-mode 2 --alignment-output-mode 0 --wrapped-scoring 0 -e 0.1 --min-seq-id 0 --min-aln-len 0 --seq-id-mode 0 --alt-ali 0 -c 0 --cov-mode 0 --max-seq-len 65535 --comp-bias-corr 1 --comp-bias-corr-scale 1 --max-rejected 2147483647 --max-accept 2147483647 --add-self-matches 0 --db-load-mode 0 --pca substitution:1.100,context:1.400 --pcb substitution:4.100,context:5.800 --score-bias 0 --realign 0 --realign-score-bias -0.2 --realign-max-seqs 2147483647 --corr-score-weight 0 --gap-open aa:11,nucl:5 --gap-extend aa:1,nucl:2 --zdrop 40 --threads 40 --compressed 0 -v 3 
+
+Compute score, coverage and sequence identity
+Query database size: 5402 type: Profile
+Target database size: 36293491 type: Aminoacid
+Calculation of alignments
+[=================================================================] 5.40K 1m 4s 820ms
+Time for merging to aln_tmp_1: 0h 0m 0s 73ms
+49414179 alignments calculated
+1418797 sequence pairs passed the thresholds (0.028712 of overall calculated)
+262.642914 hits per query sequence
+Time for processing: 0h 1m 8s 717ms
+mergedbs /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/profile_0 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/aln_1 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/aln_0 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/aln_tmp_1 
+
+Merging the results to /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/aln_1
+[=================================================================] 5.40K 0s 132ms
+Time for merging to aln_1: 0h 0m 0s 5ms
+Time for processing: 0h 0m 1s 238ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/aln_0 
+
+Time for processing: 0h 0m 0s 33ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/aln_tmp_1 
+
+Time for processing: 0h 0m 0s 37ms
+result2profile /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/profile_0 /data/home/golovin/progs/database/uniref30_2302_db /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/aln_1 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/profile_1 --sub-mat 'aa:blosum62.out,nucl:nucleotide.out' -e 0.1 --mask-profile 1 --e-profile 0.1 --comp-bias-corr 1 --comp-bias-corr-scale 1 --wg 0 --allow-deletion 0 --filter-msa 1 --filter-min-enable 0 --max-seq-id 0.9 --qid '0.0' --qsc -20 --cov 0 --diff 1000 --pseudo-cnt-mode 0 --pca substitution:1.100,context:1.400 --pcb substitution:4.100,context:5.800 --db-load-mode 0 --gap-open aa:11,nucl:5 --gap-extend aa:1,nucl:2 --threads 40 --compressed 0 -v 3 --profile-output-mode 0 
+
+Query database size: 5402 type: Profile
+Target database size: 36293491 type: Aminoacid
+[=================================================================] 5.40K 2s 962ms
+Time for merging to profile_1: 0h 0m 0s 286ms
+Time for processing: 0h 0m 6s 264ms
+prefilter /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/profile_1 /data/home/golovin/progs/database/uniref30_2302_db /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/pref_tmp_2 --sub-mat 'aa:blosum62.out,nucl:nucleotide.out' --seed-sub-mat 'aa:VTML80.out,nucl:nucleotide.out' -s 5.7 -k 0 --target-search-mode 0 --k-score seq:2147483647,prof:2147483647 --alph-size aa:21,nucl:5 --max-seq-len 65535 --max-seqs 10000 --split 0 --split-mode 2 --split-memory-limit 0 -c 0 --cov-mode 0 --comp-bias-corr 1 --comp-bias-corr-scale 1 --diag-score 1 --exact-kmer-matching 0 --mask 1 --mask-prob 0.9 --mask-lower-case 0 --mask-n-repeat 0 --min-ungapped-score 15 --add-self-matches 0 --spaced-kmer-mode 1 --db-load-mode 0 --pca substitution:1.100,context:1.400 --pcb substitution:4.100,context:5.800 --threads 40 --compressed 0 -v 3 
+
+Query database size: 5402 type: Profile
+Estimated memory consumption: 136G
+Target database size: 36293491 type: Aminoacid
+Index table k-mer threshold: 0 at k-mer size 7 
+Index table: counting k-mers
+[=================================================================] 36.29M 1m 35s 811ms
+Index table: Masked residues: 426912248
+Index table: fill
+[=================================================================] 36.29M 1m 50s 1ms
+Index statistics
+Entries:          7695820087
+DB size:          53801 MB
+Avg k-mer size:   6.012359
+Top 10 k-mers
+    LAMHETP	17723
+    FLNSHRT	14660
+    YTGTGKG	14511
+    GPGGKLL	12458
+    GPGGKLA	11733
+    KSFANHE	11574
+    RQLNLNA	10912
+    GRDQVRG	10710
+    LDDFKND	10538
+    IDDFKND	10378
+Time for index table init: 0h 3m 45s 290ms
+Process prefiltering step 1 of 1
+
+k-mer similarity threshold: 110
+Starting prefiltering scores calculation (step 1 of 1)
+Query db start 1 to 5402
+Target db start 1 to 36293491
+[=================================================================] 5.40K 9s 767ms
+
+939.833903 k-mers per position
+814064 DB matches per sequence
+0 overflows
+8654 sequences passed prefiltering per query sequence
+9499 median result list length
+0 sequences with 0 size result lists
+Time for merging to pref_tmp_2: 0h 0m 0s 73ms
+Time for processing: 0h 4m 4s 752ms
+subtractdbs /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/pref_tmp_2 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/aln_1 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/pref_2 --threads 40 --e-profile 0.1 -e 0.1 --compressed 0 -v 3 
+
+[=================================================================] 5.40K 1s 129ms
+Time for merging to pref_2: 0h 0m 0s 73ms
+Time for processing: 0h 0m 8s 150ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/pref_tmp_2 
+
+Time for processing: 0h 0m 0s 102ms
+align /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/profile_1 /data/home/golovin/progs/database/uniref30_2302_db /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/pref_2 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/aln_tmp_2 --sub-mat 'aa:blosum62.out,nucl:nucleotide.out' -a 1 --alignment-mode 2 --alignment-output-mode 0 --wrapped-scoring 0 -e 0.1 --min-seq-id 0 --min-aln-len 0 --seq-id-mode 0 --alt-ali 0 -c 0 --cov-mode 0 --max-seq-len 65535 --comp-bias-corr 1 --comp-bias-corr-scale 1 --max-rejected 2147483647 --max-accept 2147483647 --add-self-matches 0 --db-load-mode 0 --pca substitution:1.100,context:1.400 --pcb substitution:4.100,context:5.800 --score-bias 0 --realign 0 --realign-score-bias -0.2 --realign-max-seqs 2147483647 --corr-score-weight 0 --gap-open aa:11,nucl:5 --gap-extend aa:1,nucl:2 --zdrop 40 --threads 40 --compressed 0 -v 3 
+
+Compute score, coverage and sequence identity
+Query database size: 5402 type: Profile
+Target database size: 36293491 type: Aminoacid
+Calculation of alignments
+[=================================================================] 5.40K 59s 20ms
+Time for merging to aln_tmp_2: 0h 0m 0s 73ms
+45378784 alignments calculated
+1648779 sequence pairs passed the thresholds (0.036334 of overall calculated)
+305.216400 hits per query sequence
+Time for processing: 0h 1m 3s 20ms
+mergedbs /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/profile_1 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/aln_1 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/aln_tmp_2 
+
+Merging the results to /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res
+[=================================================================] 5.40K 0s 260ms
+Time for merging to res: 0h 0m 0s 5ms
+Time for processing: 0h 0m 2s 270ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/aln_1 
+
+Time for processing: 0h 0m 0s 14ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/6228091121925850273/aln_tmp_2 
+
+Time for processing: 0h 0m 0s 41ms
+mvdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp/latest/profile_1 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/prof_res 
+
+Time for processing: 0h 0m 0s 5ms
+lndb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/qdb_h /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/prof_res_h 
+
+Time for processing: 0h 0m 0s 6ms
+expandaln /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/qdb /data/home/golovin/progs/database/uniref30_2302_db_seq /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res /data/home/golovin/progs/database/uniref30_2302_db_aln /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_exp --db-load-mode 0 --threads 40 --expansion-mode 0 -e inf --expand-filter-clusters 1 --max-seq-id 0.95 
+
+[=================================================================] 5.40K 27m 45s 924ms
+Time for merging to res_exp: 0h 0m 0s 105ms
+Time for processing: 0h 53m 0s 412ms
+align /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/prof_res /data/home/golovin/progs/database/uniref30_2302_db_seq /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_exp /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_exp_realign --db-load-mode 0 -e 10 --max-accept 100000 --threads 40 --alt-ali 10 -a 
+
+Compute score, coverage and sequence identity
+Query database size: 5402 type: Profile
+Target database size: 350950053 type: Aminoacid
+Calculation of alignments
+[=================================================================] 5.40K 5m 1s 123ms
+Time for merging to res_exp_realign: 0h 0m 0s 192ms
+86577803 alignments calculated
+67080230 sequence pairs passed the thresholds (0.774797 of overall calculated)
+12417.666016 hits per query sequence
+Time for processing: 0h 5m 51s 928ms
+filterresult /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/qdb /data/home/golovin/progs/database/uniref30_2302_db_seq /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_exp_realign /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_exp_realign_filter --db-load-mode 0 --qid 0 --qsc 0.8 --diff 0 --threads 40 --max-seq-id 1.0 --filter-min-enable 100 
+
+Query database size: 5402 type: Aminoacid
+Target database size: 350950053 type: Aminoacid
+[=================================================================] 5.40K 15s 622ms
+Time for merging to res_exp_realign_filter: 0h 0m 0s 75ms
+Time for processing: 0h 1m 2s 379ms
+result2msa /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/qdb /data/home/golovin/progs/database/uniref30_2302_db_seq /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_exp_realign_filter /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/uniref.a3m --msa-format-mode 6 --db-load-mode 0 --threads 40 --filter-msa 1 --filter-min-enable 1000 --diff 3000 --qid 0.0,0.2,0.4,0.6,0.8,1.0 --qsc 0 --max-seq-id 0.95 
+
+Query database size: 5402 type: Aminoacid
+Target database size: 350950053 type: Aminoacid
+[=================================================================] 5.40K 2m 26s 212ms
+Time for merging to uniref.a3m: 0h 0m 22s 598ms
+Time for processing: 0h 11m 28s 620ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_exp_realign_filter 
+
+Time for processing: 0h 0m 0s 126ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_exp_realign 
+
+Time for processing: 0h 0m 0s 469ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_exp 
+
+Time for processing: 0h 0m 1s 263ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res 
+
+Time for processing: 0h 0m 0s 51ms
+Create directory /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3
+search /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/prof_res /data/home/golovin/progs/database/colabfold_envdb_202108_db /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_env /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3 --threads 40 --num-iterations 3 --db-load-mode 0 -a -e 0.1 --max-seqs 10000 --prefilter-mode 0 --k-score 'seq:96,prof:80' 
+
+prefilter /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/prof_res /data/home/golovin/progs/database/colabfold_envdb_202108_db /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/pref_0 --sub-mat 'aa:blosum62.out,nucl:nucleotide.out' --seed-sub-mat 'aa:VTML80.out,nucl:nucleotide.out' -s 5.7 -k 0 --target-search-mode 0 --k-score seq:2147483647,prof:2147483647 --alph-size aa:21,nucl:5 --max-seq-len 65535 --max-seqs 10000 --split 0 --split-mode 2 --split-memory-limit 0 -c 0 --cov-mode 0 --comp-bias-corr 1 --comp-bias-corr-scale 1 --diag-score 1 --exact-kmer-matching 0 --mask 1 --mask-prob 0.9 --mask-lower-case 0 --mask-n-repeat 0 --min-ungapped-score 15 --add-self-matches 0 --spaced-kmer-mode 1 --db-load-mode 0 --pca substitution:1.100,context:1.400 --pcb substitution:4.100,context:5.800 --threads 40 --compressed 0 -v 3 
+
+Query database size: 5402 type: Profile
+Estimated memory consumption: 660G
+Target database size: 209335862 type: Aminoacid
+Index table k-mer threshold: 0 at k-mer size 7 
+Index table: counting k-mers
+[=================================================================] 209.34M 7m 46s 395ms
+Index table: Masked residues: 1410552032
+Index table: fill
+[=================================================================] 209.34M 8m 0s 291ms
+Index statistics
+Entries:          33792359511
+DB size:          203127 MB
+Avg k-mer size:   26.400281
+Top 10 k-mers
+    RSETSQS	1018753
+    TLPTTRS	748675
+    DRSRLSH	701089
+    STFYTFR	630900
+    RSLPYLF	570326
+    YTSHDPI	565237
+    PPSLFTT	561238
+    TRNSHIS	552549
+    IYLLHLP	546695
+    PRTFPTL	540724
+Time for index table init: 0h 16m 42s 23ms
+Process prefiltering step 1 of 1
+
+k-mer similarity threshold: 110
+Starting prefiltering scores calculation (step 1 of 1)
+Query db start 1 to 5402
+Target db start 1 to 209335862
+[=================================================================] 5.40K 41s 170ms
+
+939.833903 k-mers per position
+3667030 DB matches per sequence
+0 overflows
+9932 sequences passed prefiltering per query sequence
+10000 median result list length
+0 sequences with 0 size result lists
+Time for merging to pref_0: 0h 0m 0s 97ms
+Time for processing: 0h 18m 30s 523ms
+align /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/prof_res /data/home/golovin/progs/database/colabfold_envdb_202108_db /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/pref_0 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/aln_0 --sub-mat 'aa:blosum62.out,nucl:nucleotide.out' -a 1 --alignment-mode 2 --alignment-output-mode 0 --wrapped-scoring 0 -e 0.1 --min-seq-id 0 --min-aln-len 0 --seq-id-mode 0 --alt-ali 0 -c 0 --cov-mode 0 --max-seq-len 65535 --comp-bias-corr 1 --comp-bias-corr-scale 1 --max-rejected 2147483647 --max-accept 2147483647 --add-self-matches 0 --db-load-mode 0 --pca substitution:1.100,context:1.400 --pcb substitution:4.100,context:5.800 --score-bias 0 --realign 1 --realign-score-bias -0.2 --realign-max-seqs 2147483647 --corr-score-weight 0 --gap-open aa:11,nucl:5 --gap-extend aa:1,nucl:2 --zdrop 40 --threads 40 --compressed 0 -v 3 
+
+Compute score only
+Query database size: 5402 type: Profile
+Target database size: 209335862 type: Aminoacid
+Calculation of alignments
+[=================================================================] 5.40K 1m 54s 424ms
+Time for merging to aln_0: 0h 0m 0s 101ms
+53654943 alignments calculated
+17485044 sequence pairs passed the thresholds (0.325879 of overall calculated)
+3236.772217 hits per query sequence
+Time for processing: 0h 2m 19s 128ms
+result2profile /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/prof_res /data/home/golovin/progs/database/colabfold_envdb_202108_db /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/aln_0 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/profile_0 --sub-mat 'aa:blosum62.out,nucl:nucleotide.out' -e 0.1 --mask-profile 1 --e-profile 0.1 --comp-bias-corr 1 --comp-bias-corr-scale 1 --wg 0 --allow-deletion 0 --filter-msa 1 --filter-min-enable 0 --max-seq-id 0.9 --qid '0.0' --qsc -20 --cov 0 --diff 1000 --pseudo-cnt-mode 0 --pca substitution:1.100,context:1.400 --pcb substitution:4.100,context:5.800 --db-load-mode 0 --gap-open aa:11,nucl:5 --gap-extend aa:1,nucl:2 --threads 40 --compressed 0 -v 3 --profile-output-mode 0 
+
+Query database size: 5402 type: Profile
+Target database size: 209335862 type: Aminoacid
+[=================================================================] 5.40K 47s 124ms
+Time for merging to profile_0: 0h 0m 0s 287ms
+Time for processing: 0h 1m 2s 988ms
+prefilter /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/profile_0 /data/home/golovin/progs/database/colabfold_envdb_202108_db /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/pref_tmp_1 --sub-mat 'aa:blosum62.out,nucl:nucleotide.out' --seed-sub-mat 'aa:VTML80.out,nucl:nucleotide.out' -s 5.7 -k 0 --target-search-mode 0 --k-score seq:2147483647,prof:2147483647 --alph-size aa:21,nucl:5 --max-seq-len 65535 --max-seqs 10000 --split 0 --split-mode 2 --split-memory-limit 0 -c 0 --cov-mode 0 --comp-bias-corr 1 --comp-bias-corr-scale 1 --diag-score 1 --exact-kmer-matching 0 --mask 1 --mask-prob 0.9 --mask-lower-case 0 --mask-n-repeat 0 --min-ungapped-score 15 --add-self-matches 0 --spaced-kmer-mode 1 --db-load-mode 0 --pca substitution:1.100,context:1.400 --pcb substitution:4.100,context:5.800 --threads 40 --compressed 0 -v 3 
+
+Query database size: 5402 type: Profile
+Estimated memory consumption: 660G
+Target database size: 209335862 type: Aminoacid
+Index table k-mer threshold: 0 at k-mer size 7 
+Index table: counting k-mers
+[=================================================================] 209.34M 6m 50s 506ms
+Index table: Masked residues: 1410552032
+Index table: fill
+[=================================================================] 209.34M 8m 0s 403ms
+Index statistics
+Entries:          33792359511
+DB size:          203127 MB
+Avg k-mer size:   26.400281
+Top 10 k-mers
+    RSETSQS	1018753
+    TLPTTRS	748675
+    DRSRLSH	701089
+    STFYTFR	630900
+    RSLPYLF	570326
+    YTSHDPI	565237
+    PPSLFTT	561238
+    TRNSHIS	552549
+    IYLLHLP	546695
+    PRTFPTL	540724
+Time for index table init: 0h 15m 48s 395ms
+Process prefiltering step 1 of 1
+
+k-mer similarity threshold: 110
+Starting prefiltering scores calculation (step 1 of 1)
+Query db start 1 to 5402
+Target db start 1 to 209335862
+[=================================================================] 5.40K 40s 35ms
+
+835.523006 k-mers per position
+3545934 DB matches per sequence
+0 overflows
+9944 sequences passed prefiltering per query sequence
+10000 median result list length
+0 sequences with 0 size result lists
+Time for merging to pref_tmp_1: 0h 0m 0s 73ms
+Time for processing: 0h 16m 51s 39ms
+subtractdbs /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/pref_tmp_1 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/aln_0 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/pref_1 --threads 40 --e-profile 0.1 -e 0.1 --compressed 0 -v 3 
+
+[=================================================================] 5.40K 1s 732ms
+Time for merging to pref_1: 0h 0m 0s 72ms
+Time for processing: 0h 0m 8s 132ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/pref_tmp_1 
+
+Time for processing: 0h 0m 0s 131ms
+align /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/profile_0 /data/home/golovin/progs/database/colabfold_envdb_202108_db /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/pref_1 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/aln_tmp_1 --sub-mat 'aa:blosum62.out,nucl:nucleotide.out' -a 1 --alignment-mode 2 --alignment-output-mode 0 --wrapped-scoring 0 -e 0.1 --min-seq-id 0 --min-aln-len 0 --seq-id-mode 0 --alt-ali 0 -c 0 --cov-mode 0 --max-seq-len 65535 --comp-bias-corr 1 --comp-bias-corr-scale 1 --max-rejected 2147483647 --max-accept 2147483647 --add-self-matches 0 --db-load-mode 0 --pca substitution:1.100,context:1.400 --pcb substitution:4.100,context:5.800 --score-bias 0 --realign 0 --realign-score-bias -0.2 --realign-max-seqs 2147483647 --corr-score-weight 0 --gap-open aa:11,nucl:5 --gap-extend aa:1,nucl:2 --zdrop 40 --threads 40 --compressed 0 -v 3 
+
+Compute score, coverage and sequence identity
+Query database size: 5402 type: Profile
+Target database size: 209335862 type: Aminoacid
+Calculation of alignments
+[=================================================================] 5.40K 45s 836ms
+Time for merging to aln_tmp_1: 0h 0m 0s 72ms
+37607765 alignments calculated
+5860975 sequence pairs passed the thresholds (0.155845 of overall calculated)
+1084.963867 hits per query sequence
+Time for processing: 0h 1m 3s 831ms
+mergedbs /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/profile_0 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/aln_1 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/aln_0 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/aln_tmp_1 
+
+Merging the results to /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/aln_1
+[=================================================================] 5.40K 1s 682ms
+Time for merging to aln_1: 0h 0m 0s 8ms
+Time for processing: 0h 0m 14s 42ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/aln_0 
+
+Time for processing: 0h 0m 0s 127ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/aln_tmp_1 
+
+Time for processing: 0h 0m 0s 71ms
+result2profile /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/profile_0 /data/home/golovin/progs/database/colabfold_envdb_202108_db /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/aln_1 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/profile_1 --sub-mat 'aa:blosum62.out,nucl:nucleotide.out' -e 0.1 --mask-profile 1 --e-profile 0.1 --comp-bias-corr 1 --comp-bias-corr-scale 1 --wg 0 --allow-deletion 0 --filter-msa 1 --filter-min-enable 0 --max-seq-id 0.9 --qid '0.0' --qsc -20 --cov 0 --diff 1000 --pseudo-cnt-mode 0 --pca substitution:1.100,context:1.400 --pcb substitution:4.100,context:5.800 --db-load-mode 0 --gap-open aa:11,nucl:5 --gap-extend aa:1,nucl:2 --threads 40 --compressed 0 -v 3 --profile-output-mode 0 
+
+Query database size: 5402 type: Profile
+Target database size: 209335862 type: Aminoacid
+[=================================================================] 5.40K 56s 103ms
+Time for merging to profile_1: 0h 0m 0s 291ms
+Time for processing: 0h 1m 12s 339ms
+prefilter /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/profile_1 /data/home/golovin/progs/database/colabfold_envdb_202108_db /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/pref_tmp_2 --sub-mat 'aa:blosum62.out,nucl:nucleotide.out' --seed-sub-mat 'aa:VTML80.out,nucl:nucleotide.out' -s 5.7 -k 0 --target-search-mode 0 --k-score seq:2147483647,prof:2147483647 --alph-size aa:21,nucl:5 --max-seq-len 65535 --max-seqs 10000 --split 0 --split-mode 2 --split-memory-limit 0 -c 0 --cov-mode 0 --comp-bias-corr 1 --comp-bias-corr-scale 1 --diag-score 1 --exact-kmer-matching 0 --mask 1 --mask-prob 0.9 --mask-lower-case 0 --mask-n-repeat 0 --min-ungapped-score 15 --add-self-matches 0 --spaced-kmer-mode 1 --db-load-mode 0 --pca substitution:1.100,context:1.400 --pcb substitution:4.100,context:5.800 --threads 40 --compressed 0 -v 3 
+
+Query database size: 5402 type: Profile
+Estimated memory consumption: 660G
+Target database size: 209335862 type: Aminoacid
+Index table k-mer threshold: 0 at k-mer size 7 
+Index table: counting k-mers
+[=================================================================] 209.34M 6m 50s 358ms
+Index table: Masked residues: 1410552032
+Index table: fill
+[=================================================================] 209.34M 8m 0s 364ms
+Index statistics
+Entries:          33792359511
+DB size:          203127 MB
+Avg k-mer size:   26.400281
+Top 10 k-mers
+    RSETSQS	1018753
+    TLPTTRS	748675
+    DRSRLSH	701089
+    STFYTFR	630900
+    RSLPYLF	570326
+    YTSHDPI	565237
+    PPSLFTT	561238
+    TRNSHIS	552549
+    IYLLHLP	546695
+    PRTFPTL	540724
+Time for index table init: 0h 15m 46s 692ms
+Process prefiltering step 1 of 1
+
+k-mer similarity threshold: 110
+Starting prefiltering scores calculation (step 1 of 1)
+Query db start 1 to 5402
+Target db start 1 to 209335862
+[=================================================================] 5.40K 37s 532ms
+
+755.487590 k-mers per position
+3223428 DB matches per sequence
+0 overflows
+9944 sequences passed prefiltering per query sequence
+10000 median result list length
+0 sequences with 0 size result lists
+Time for merging to pref_tmp_2: 0h 0m 0s 111ms
+Time for processing: 0h 16m 46s 806ms
+subtractdbs /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/pref_tmp_2 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/aln_1 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/pref_2 --threads 40 --e-profile 0.1 -e 0.1 --compressed 0 -v 3 
+
+[=================================================================] 5.40K 1s 903ms
+Time for merging to pref_2: 0h 0m 0s 71ms
+Time for processing: 0h 0m 7s 771ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/pref_tmp_2 
+
+Time for processing: 0h 0m 0s 141ms
+align /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/profile_1 /data/home/golovin/progs/database/colabfold_envdb_202108_db /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/pref_2 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/aln_tmp_2 --sub-mat 'aa:blosum62.out,nucl:nucleotide.out' -a 1 --alignment-mode 2 --alignment-output-mode 0 --wrapped-scoring 0 -e 0.1 --min-seq-id 0 --min-aln-len 0 --seq-id-mode 0 --alt-ali 0 -c 0 --cov-mode 0 --max-seq-len 65535 --comp-bias-corr 1 --comp-bias-corr-scale 1 --max-rejected 2147483647 --max-accept 2147483647 --add-self-matches 0 --db-load-mode 0 --pca substitution:1.100,context:1.400 --pcb substitution:4.100,context:5.800 --score-bias 0 --realign 0 --realign-score-bias -0.2 --realign-max-seqs 2147483647 --corr-score-weight 0 --gap-open aa:11,nucl:5 --gap-extend aa:1,nucl:2 --zdrop 40 --threads 40 --compressed 0 -v 3 
+
+Compute score, coverage and sequence identity
+Query database size: 5402 type: Profile
+Target database size: 209335862 type: Aminoacid
+Calculation of alignments
+[=================================================================] 5.40K 40s 188ms
+Time for merging to aln_tmp_2: 0h 0m 0s 70ms
+34139115 alignments calculated
+4689216 sequence pairs passed the thresholds (0.137356 of overall calculated)
+868.051819 hits per query sequence
+Time for processing: 0h 0m 57s 212ms
+mergedbs /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/profile_1 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_env /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/aln_1 /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/aln_tmp_2 
+
+Merging the results to /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_env
+[=================================================================] 5.40K 2s 27ms
+Time for merging to res_env: 0h 0m 0s 7ms
+Time for processing: 0h 0m 17s 43ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/aln_1 
+
+Time for processing: 0h 0m 0s 190ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/9567579238507128367/aln_tmp_2 
+
+Time for processing: 0h 0m 0s 62ms
+expandaln /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/prof_res /data/home/golovin/progs/database/colabfold_envdb_202108_db_seq /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_env /data/home/golovin/progs/database/colabfold_envdb_202108_db_aln /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_env_exp -e inf --expansion-mode 0 --db-load-mode 0 --threads 40 
+
+[=================================================================] 5.40K 47s 758ms
+Time for merging to res_env_exp: 0h 0m 0s 90ms
+Time for processing: 0h 32m 32s 744ms
+align /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/tmp3/latest/profile_1 /data/home/golovin/progs/database/colabfold_envdb_202108_db_seq /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_env_exp /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_env_exp_realign --db-load-mode 0 -e 10 --max-accept 100000 --threads 40 --alt-ali 10 -a 
+
+Compute score, coverage and sequence identity
+Query database size: 5402 type: Profile
+Target database size: 738695581 type: Aminoacid
+Calculation of alignments
+[=================================================================] 5.40K 9m 17s 693ms
+Time for merging to res_env_exp_realign: 0h 0m 0s 124ms
+188777334 alignments calculated
+159355896 sequence pairs passed the thresholds (0.844147 of overall calculated)
+29499.425781 hits per query sequence
+Time for processing: 0h 10m 24s 950ms
+filterresult /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/qdb /data/home/golovin/progs/database/colabfold_envdb_202108_db_seq /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_env_exp_realign /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_env_exp_realign_filter --db-load-mode 0 --qid 0 --qsc 0.8 --diff 0 --max-seq-id 1.0 --threads 40 --filter-min-enable 100 
+
+Query database size: 5402 type: Aminoacid
+Target database size: 738695581 type: Aminoacid
+[=================================================================] 5.40K 32s 723ms
+Time for merging to res_env_exp_realign_filter: 0h 0m 0s 75ms
+Time for processing: 0h 1m 49s 317ms
+result2msa /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/qdb /data/home/golovin/progs/database/colabfold_envdb_202108_db_seq /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_env_exp_realign_filter /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/bfd.mgnify30.metaeuk30.smag30.a3m --msa-format-mode 6 --db-load-mode 0 --threads 40 --filter-msa 1 --filter-min-enable 1000 --diff 3000 --qid 0.0,0.2,0.4,0.6,0.8,1.0 --qsc 0 --max-seq-id 0.95 
+
+Query database size: 5402 type: Aminoacid
+Target database size: 738695581 type: Aminoacid
+[=================================================================] 5.40K 4m 13s 197ms
+Time for merging to bfd.mgnify30.metaeuk30.smag30.a3m: 0h 0m 29s 378ms
+Time for processing: 0h 12m 34s 504ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_env_exp_realign_filter 
+
+Time for processing: 0h 0m 0s 199ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_env_exp_realign 
+
+Time for processing: 0h 0m 1s 5ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_env_exp 
+
+Time for processing: 0h 0m 1s 256ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/res_env 
+
+Time for processing: 0h 0m 0s 170ms
+mergedbs /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/qdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/final.a3m /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/uniref.a3m /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/bfd.mgnify30.metaeuk30.smag30.a3m 
+
+Merging the results to /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/final.a3m
+[=================================================================] 5.40K 1m 10s 675ms
+Time for merging to final.a3m: 0h 0m 0s 46ms
+Time for processing: 0h 1m 51s 785ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/bfd.mgnify30.metaeuk30.smag30.a3m 
+
+Time for processing: 0h 0m 0s 292ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/uniref.a3m 
+
+Time for processing: 0h 0m 0s 242ms
+unpackdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/final.a3m /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn --unpack-name-mode 0 --unpack-suffix .a3m 
+
+[=================================================================] 5.40K 47s 132ms
+Time for processing: 0h 0m 47s 283ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/final.a3m 
+
+Time for processing: 0h 0m 0s 551ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/prof_res 
+
+Time for processing: 0h 0m 0s 61ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/prof_res_h 
+
+Time for processing: 0h 0m 0s 32ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/qdb 
+
+Time for processing: 0h 0m 0s 18ms
+rmdb /trinity/home/golovin/ipermyakov/allosteric/bioemu/msas/baselines_proteinmpnn/qdb_h 
+
+Time for processing: 0h 0m 0s 1ms
+===== done 2026-09-21T18:30:45+03:00 =====
+5402

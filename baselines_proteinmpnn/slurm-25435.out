@@ -1,0 +1,4 @@
+===== colabfold_search 2026-09-21T15:01:28+03:00 host=node36.cluster =====
+fasta=/trinity/home/golovin/ipermyakov/allosteric/bioemu/inputs/baselines_proteinmpnn_seqs.fasta
+nseq=5402
+/trinity/shared/software/mmseqs/cpu/mmseqs/bin/mmseqs

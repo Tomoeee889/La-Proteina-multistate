@@ -1,664 +1,544 @@
 #!/usr/bin/env python3
 """
-validate_baselines_bioemu.py
+ПОЛНАЯ ВАЛИДАЦИЯ БЕЙЗЛАЙНА С НУЛЯ (самодостаточная).
 
-Валидация baseline-структур через BioEmu.
+Читает ТОЛЬКО целые источники:
+  bioemu_baselines/<folder>/batch_*.npz   (координаты сэмплов, nm -> приводим к Å)
+  baselines/<regime>/<core>/<core>_path{A,B}.pdb   (бэкбоны, Å)
 
-Для каждой пары (pathA.pdb, pathB.pdb) из baselines/:
-  1. Извлекает последовательности из обоих PDB
-  2. Запускает BioEmu на каждой последовательности
-  3. Считает CA-RMSD и TM-score каждого кадра к СВОЕМУ референсу
-     (seqA → pathA, seqB → pathB)
-  4. Записывает результаты в results.csv
+Пишет в bioemu_plots/bioemu_baselines_statistics/:
+  Таблички:
+    bioemu_eval_per_sample.csv        метрики на каждый сэмпл
+    bioemu_eval_per_ensemble.csv      агрегат на каждый ансамбль (+ FigA-D источник)
+    bioemu_eval_stats_by_regime.csv   сводка по 6 regime
+    bioemu_multistate_pairs.csv       пары A+B + bb_rmsd_AB + multistate_success
+    bioemu_multistate_stats.csv       success-rate по regime/task/noise
+  Графики (подписи на английском, читабельный масштаб):
+    eval_figA_rmsd.png/pdf            self-RMSD distributions (path x task)
+    eval_figB_tm.png/pdf              self-TM boxplot by regime
+    eval_figC_mixing.png/pdf          state-mixing partner_pref vs noise (per task)
+    eval_figD_cross.png/pdf           cross-RMSD heatmaps A->B and B->A
+    eval_ms_fig1_bb_hist.png/pdf      калибровка T_distinct (распределение bb_rmsd_AB)
+    eval_ms_fig2_plasticity.png/pdf   tm_self vs tm_cross, цвет = bb (пластичность vs вырождение)
+    eval_ms_fig3_success_vs_bb.png/pdf  HEADLINE: success-rate vs bb-бакет (+ хук модели)
+    eval_ms_fig4_success_grid.png/pdf   success-rate regime x noise
 
-Чекпойнты: status.csv отслеживает статус каждой задачи.
-Возобновление: при рестарте начинает с первой строки status=pending.
-
-Использование:
-  python validate_baselines_bioemu.py \\
-      --baselines_dir baselines \\
-      --output_dir bioemu_baselines \\
-      --task all --mode all \\
-      --num_samples 120 --threshold 3.5
-
-  # Dry-run (сформировать список задач в status.csv):
-  python validate_baselines_bioemu.py --task all --mode all --max_runs 0
-
-  # Лимит запусков за вызов:
-  python validate_baselines_bioemu.py --task 1 --mode default --max_runs 50
+Зависимости: numpy pandas matplotlib seaborn tqdm. MDAnalysis опционален (для n_states_xtc).
+Быстрый тест:  MS_LIMIT=300 python run_full_validation.py
+Хук модели:    MODEL_PAIRS=my_pairs.csv python run_full_validation.py
 """
-
 import os
 import re
-import sys
-import argparse
-import logging
-import datetime
-import hashlib
+import warnings
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from pathlib import Path
-from collections import defaultdict
-
-# ── BioEmu импортируем НА ВЕРХНЕМ УРОВНЕ (как в рабочем running_bioemu.py) ──
-print("Loading BioEmu model (this may take a minute) ...", flush=True)
-from bioemu import sample as bioemu_sample
-print("BioEmu model loaded.", flush=True)
-
-# BioPython для извлечения последовательности
-from Bio.PDB import PDBParser
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-)
-logger = logging.getLogger(__name__)
-
-# ===========================================================================
-#  КОНСТАНТЫ
-# ===========================================================================
-
-NOISE_PATTERN = re.compile(r"noise_(\d+\.\d+)_job_\d+_n_\d+_id_\d+")
-
-THREE_TO_ONE = {
-    "ALA": "A", "CYS": "C", "ASP": "D", "GLU": "E", "PHE": "F",
-    "GLY": "G", "HIS": "H", "ILE": "I", "LYS": "K", "LEU": "L",
-    "MET": "M", "ASN": "N", "PRO": "P", "GLN": "Q", "ARG": "R",
-    "SER": "S", "THR": "T", "VAL": "V", "TRP": "W", "TYR": "Y",
-    "UNK": "X", "MSE": "M", "SEC": "U", "PYL": "O",
-}
-
-STATUS_COLUMNS = [
-    "task", "mode", "noise_scale", "pair_id", "seq_type",
-    "status", "timestamp", "error",
-]
-RESULTS_COLUMNS = [
-    "task", "mode", "noise_scale", "pair_id", "seq_type",
-    "coverage", "rmsd_best", "rmsd_mean", "tm_best", "tm_mean",
-    "num_samples",
-]
-
-
-# ===========================================================================
-#  PDB PARSING — извлечение последовательности
-# ===========================================================================
-
-def get_sequence_from_pdb(pdb_path):
-    """Извлекает последовательность из PDB (первая цепь первой модели)."""
-    parser = PDBParser(QUIET=True)
-    structure = parser.get_structure("protein", str(pdb_path))
-    model = structure[0]
-    chain = list(model.get_chains())[0]
-    seq = []
-    for residue in chain.get_residues():
-        if residue.id[0] == " ":  # пропускаем гетероатомы
-            resname = residue.resname
-            seq.append(THREE_TO_ONE.get(resname, "X"))
-    return "".join(seq)
-
-
-# ===========================================================================
-#  СКАНИРОВАНИЕ BASELINES
-# ===========================================================================
-
-def scan_baselines(baselines_dir, tasks, modes, num_pairs, seed):
-    """Сканирует baselines/ и формирует список задач.
-
-    Возвращает список dict:
-      {task, mode, noise_scale, pair_id, seq_type, pdb_a, pdb_b}
-    """
-    baselines_dir = Path(baselines_dir)
-    if not baselines_dir.is_dir():
-        logger.error(f"baselines_dir not found: {baselines_dir}")
-        sys.exit(1)
-
-    all_tasks = []
-
-    for task in tasks:
-        for mode in modes:
-            task_mode_dir = baselines_dir / f"task{task}_{mode}"
-            if not task_mode_dir.is_dir():
-                logger.warning(f"Directory not found, skipping: {task_mode_dir}")
-                continue
-
-            pairs_by_scale = defaultdict(list)
-
-            for sample_dir in sorted(task_mode_dir.iterdir()):
-                if not sample_dir.is_dir():
-                    continue
-
-                m = NOISE_PATTERN.match(sample_dir.name)
-                if not m:
-                    continue
-
-                noise_scale = float(m.group(1))
-
-                pdb_a = sample_dir / f"{sample_dir.name}_pathA.pdb"
-                if not pdb_a.exists():
-                    pdb_a = sample_dir / "pathA.pdb"
-                pdb_b = sample_dir / f"{sample_dir.name}_pathB.pdb"
-                if not pdb_b.exists():
-                    pdb_b = sample_dir / "pathB.pdb"
-
-                if not pdb_a.exists() or not pdb_b.exists():
-                    continue
-
-                pairs_by_scale[noise_scale].append({
-                    "pair_id": sample_dir.name,
-                    "pdb_a": str(pdb_a),
-                    "pdb_b": str(pdb_b),
-                })
-
-            for noise_scale in sorted(pairs_by_scale.keys()):
-                pairs = pairs_by_scale[noise_scale]
-                n_select = min(num_pairs, len(pairs))
-
-                # Детерминированный seed (hashlib вместо рандомизированного hash())
-                h = int(hashlib.md5(f"{task}_{mode}_{noise_scale}".encode()).hexdigest(), 16)
-                local_rng = np.random.RandomState(seed + h % (2**31))
-                selected_idx = local_rng.choice(len(pairs), size=n_select, replace=False)
-                selected = [pairs[i] for i in sorted(selected_idx)]
-
-                for pair in selected:
-                    for seq_type in ["A", "B"]:
-                        all_tasks.append({
-                            "task": f"task{task}",
-                            "mode": mode,
-                            "noise_scale": noise_scale,
-                            "pair_id": pair["pair_id"],
-                            "seq_type": seq_type,
-                            "pdb_a": pair["pdb_a"],
-                            "pdb_b": pair["pdb_b"],
-                        })
-
-    return all_tasks
-
-
-# ===========================================================================
-#  ЧЕКПОЙНТЫ
-# ===========================================================================
-
-def load_status(output_dir):
-    """Загружает status.csv. Возвращает DataFrame (или пустой)."""
-    status_path = Path(output_dir) / "status.csv"
-    if status_path.exists():
-        df = pd.read_csv(status_path)
-        for col in STATUS_COLUMNS:
-            if col not in df.columns:
-                df[col] = ""
-        return df
-    return pd.DataFrame(columns=STATUS_COLUMNS)
-
-
-def save_status(output_dir, df):
-    """Сохраняет status.csv."""
-    status_path = Path(output_dir) / "status.csv"
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    df[STATUS_COLUMNS].to_csv(status_path, index=False)
-
-
-def update_status_row(status_df, task_info, status, error=""):
-    """Обновляет или добавляет строку в status_df."""
-    mask = (
-        (status_df["task"] == task_info["task"]) &
-        (status_df["mode"] == task_info["mode"]) &
-        (status_df["noise_scale"] == task_info["noise_scale"]) &
-        (status_df["pair_id"] == task_info["pair_id"]) &
-        (status_df["seq_type"] == task_info["seq_type"])
-    )
-
-    timestamp = datetime.datetime.now().isoformat(timespec="seconds")
-
-    if mask.any():
-        idx = mask.idxmax()
-        status_df.loc[idx, "status"] = status
-        status_df.loc[idx, "timestamp"] = timestamp
-        status_df.loc[idx, "error"] = error
-    else:
-        new_row = {
-            "task": task_info["task"],
-            "mode": task_info["mode"],
-            "noise_scale": task_info["noise_scale"],
-            "pair_id": task_info["pair_id"],
-            "seq_type": task_info["seq_type"],
-            "status": status,
-            "timestamp": timestamp,
-            "error": error,
-        }
-        status_df = pd.concat(
-            [status_df, pd.DataFrame([new_row])],
-            ignore_index=True,
-        )
-
-    return status_df
-
-
-def is_done(status_df, task_info):
-    """Проверяет, завершена ли задача (status=done)."""
-    if status_df.empty:
-        return False
-    mask = (
-        (status_df["task"] == task_info["task"]) &
-        (status_df["mode"] == task_info["mode"]) &
-        (status_df["noise_scale"] == task_info["noise_scale"]) &
-        (status_df["pair_id"] == task_info["pair_id"]) &
-        (status_df["seq_type"] == task_info["seq_type"])
-    )
-    if not mask.any():
-        return False
-    return status_df.loc[mask.idxmax(), "status"] == "done"
-
-
-def find_first_unfinished_index(status_df, all_tasks):
-    """Находит индекс в all_tasks первой НЕ завершённой задачи.
-    Не завершённая = status=pending, status=failed, или отсутствует в status_df.
-
-    Ищет в порядке status.csv (как они были записаны), а не в порядке all_tasks.
-    Это гарантирует, что при возобновлении скрипт начнёт с той же задачи,
-    на которой остановился в прошлый раз.
-
-    Возвращает None, если все done."""
-    if status_df.empty:
-        return 0  # все новые
-
-    # Проходим по status.csv в порядке записей
-    for _, row in status_df.iterrows():
-        if row["status"] in ("pending", "failed"):
-            # Нашли первую незавершённую — ищем её индекс в all_tasks
-            for i, task_info in enumerate(all_tasks):
-                if (
-                    task_info["task"] == row["task"]
-                    and task_info["mode"] == row["mode"]
-                    and task_info["noise_scale"] == row["noise_scale"]
-                    and task_info["pair_id"] == row["pair_id"]
-                    and task_info["seq_type"] == row["seq_type"]
-                ):
-                    return i
-
-    # Если в status.csv все done — проверяем, есть ли задачи, которых нет в status_df
-    for i, task_info in enumerate(all_tasks):
-        mask = (
-            (status_df["task"] == task_info["task"]) &
-            (status_df["mode"] == task_info["mode"]) &
-            (status_df["noise_scale"] == task_info["noise_scale"]) &
-            (status_df["pair_id"] == task_info["pair_id"]) &
-            (status_df["seq_type"] == task_info["seq_type"])
-        )
-        if not mask.any():
-            return i
-
-    return None
-
-
-# ===========================================================================
-#  BIOEMU ГЕНЕРАЦИЯ
-# ===========================================================================
-
-def run_bioemu(sequence, output_dir, num_samples, batch_size):
-    """Запускает BioEmu на последовательности."""
-    bioemu_sample.main(
-        sequence=sequence,
-        num_samples=num_samples,
-        output_dir=str(output_dir),
-        batch_size_100=batch_size,
-        model_name="bioemu-v1.2",
-    )
-
-
-# ===========================================================================
-#  TM-SCORE (Zhang Group алгоритм)
-# ===========================================================================
-
-def kabsch_align(P, Q):
-    """Выравнивание Кабша. P, Q: [N, 3]."""
-    Pc = P - P.mean(axis=0)
-    Qc = Q - Q.mean(axis=0)
-    H = Pc.T @ Qc
-    U, S, Vt = np.linalg.svd(H)
-    d = np.sign(np.linalg.det(Vt.T @ U.T))
-    D = np.diag([1, 1, d])
-    R = Vt.T @ D @ U.T
-    t = Q.mean(axis=0) - P.mean(axis=0) @ R.T
-    return R, t
-
-
-def tm_score(P, Q):
-    """TM-score между двумя CA-массивами [N, 3]."""
-    L = min(len(P), len(Q))
-    if L == 0:
-        return 0.0
-    Lnorm = L
-    if Lnorm < 21:
-        d0 = 0.5
-    else:
-        d0 = 1.24 * (Lnorm - 15) ** (1.0 / 3.0) - 1.8
-    d0 = max(d0, 0.5)
-    R, t = kabsch_align(P[:L], Q[:L])
-    P_aligned = P[:L] @ R.T + t
-    di = np.sqrt(np.sum((P_aligned - Q[:L]) ** 2, axis=1))
-    tm = np.sum(1.0 / (1.0 + (di / d0) ** 2)) / Lnorm
-    return float(tm)
-
-
-def tm_score_traj(traj_ca, ref_ca):
-    """TM-score для каждого кадра к референсу. [n_frames] → [n_frames]."""
-    n_frames = traj_ca.shape[0]
-    scores = np.zeros(n_frames)
-    for i in range(n_frames):
-        scores[i] = tm_score(traj_ca[i], ref_ca)
-    return scores
-
-
-# ===========================================================================
-#  RMSD + TM-SCORE РАСЧЁТ (mdtraj)
-# ===========================================================================
-
-def calc_metrics(ensemble_dir, ref_pdb, threshold):
-    """Считает CA-RMSD и TM-score каждого кадра к ref_pdb.
-
-    Ансамбль сравнивается только со СВОИМ референсом:
-      seqA → pathA, seqB → pathB.
-    """
-    import mdtraj as md
-
-    ensemble_dir = Path(ensemble_dir)
-    xtc = ensemble_dir / "samples.xtc"
-    top = ensemble_dir / "topology.pdb"
-
-    if not xtc.exists() or not top.exists():
-        raise FileNotFoundError(f"BioEmu ensemble not found: {xtc} / {top}")
-
-    traj = md.load(str(xtc), top=str(top))
-    ref = md.load(ref_pdb)
-
-    ca_traj = [a.index for a in traj.topology.atoms if a.name == "CA"]
-    ca_ref = [a.index for a in ref.topology.atoms if a.name == "CA"]
-    L = min(len(ca_traj), len(ca_ref))
-    if L == 0:
-        raise ValueError("No CA atoms found")
-
-    # RMSD
-    rmsd = md.rmsd(traj, ref, atom_indices=ca_traj[:L], ref_atom_indices=ca_ref[:L])
-    rmsd = rmsd * 10.0  # nm → Å
-
-    # TM-score
-    traj_ca = traj.xyz[:, ca_traj[:L], :] * 10.0  # nm → Å
-    ref_ca = ref.xyz[0, ca_ref[:L], :] * 10.0
-    tm = tm_score_traj(traj_ca, ref_ca)
-
-    coverage = float(np.mean(rmsd < threshold))
-
-    return {
-        "coverage": round(coverage, 4),
-        "rmsd_best": round(float(rmsd.min()), 3),
-        "rmsd_mean": round(float(rmsd.mean()), 3),
-        "tm_best": round(float(tm.max()), 4),
-        "tm_mean": round(float(tm.mean()), 4),
-        "num_samples": len(rmsd),
-    }
-
-
-# ===========================================================================
-#  RESULTS CSV
-# ===========================================================================
-
-def save_results(output_dir, status_df, all_tasks):
-    """Собирает results.csv из всех задач со status=done."""
-    results_path = Path(output_dir) / "results.csv"
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+import matplotlib.pyplot as plt
+import seaborn as sns
+from tqdm import tqdm
+
+warnings.filterwarnings("ignore")
+
+try:
+    import MDAnalysis as mda
+    HAS_MDA = True
+except Exception:
+    HAS_MDA = False
+
+# ==================== ПУТИ ====================
+BASE = Path("/home/domain/aristowi/la-proteina-main")
+BIO_DIR = BASE / "bioemu_baselines"
+BB_DIR = BASE / "baselines"
+OUT = BASE / "bioemu_plots" / "bioemu_baselines_statistics"
+OUT.mkdir(parents=True, exist_ok=True)
+
+PER_SAMPLE = OUT / "bioemu_eval_per_sample.csv"
+PER_ENS = OUT / "bioemu_eval_per_ensemble.csv"
+STATS_REG = OUT / "bioemu_eval_stats_by_regime.csv"
+PAIRS_CSV = OUT / "bioemu_multistate_pairs.csv"
+MS_STATS = OUT / "bioemu_multistate_stats.csv"
+MODEL_PAIRS = os.environ.get("MODEL_PAIRS", "").strip()
+MS_LIMIT = int(os.environ.get("MS_LIMIT", "0"))
+
+# ==================== ГЕОМЕТРИЧЕСКИЕ КОНСТАНТЫ ====================
+NM_TO_ANG = 10.0
+AUTO_UNIT = True
+CONTACT_CUTOFF = 8.0
+MIN_SEQ_SEP = 4
+TM_COEF, TM_SHIFT = 1.24, 1.8
+
+# ==================== ПОРОГИ MULTISTATE (калибруй по Fig1!) ====================
+T_TM_SELF = 0.7
+T_TM_CROSS = 0.5
+T_DISTINCT = 2.0
+BB_EDGES = [0, 1, 2, 3, 4, 5, 6, 8, 10, 20, np.inf]
+BB_LABELS = ["0-1", "1-2", "2-3", "3-4", "4-5", "5-6", "6-8", "8-10", "10-20", "20+"]
+
+# ==================== РЕГУЛЯРКИ (из имени папки) ====================
+REGIME_RE = re.compile(r"(task\d+_(?:default|sim_eps))", re.I)
+PATH_RE = re.compile(r"path[_-]?([AB])(?=[_-]|$)", re.I)
+CORE_RE = re.compile(r"noise_[0-9.]+_job_[0-9]+_n_[0-9]+_id_[0-9]+")
+NOISE_RE = re.compile(r"noise_([0-9.]+)")
+
+sns.set_theme(style="whitegrid", context="paper", font="DejaVu Sans")
+plt.rcParams.update({
+    "figure.dpi": 150, "savefig.dpi": 300, "savefig.bbox": "tight",
+    "axes.titleweight": "bold", "axes.titlesize": 11, "axes.labelsize": 10,
+    "xtick.labelsize": 9, "ytick.labelsize": 9, "legend.fontsize": 9,
+    "legend.frameon": False, "font.size": 10,
+})
+MODE_COLOR = {"default": "#2E86C1", "sim_eps": "#E67E22"}
+TASKS = ["task1", "task2", "task3"]
+REGIMES = ["task1_default", "task1_sim_eps", "task2_default",
+           "task2_sim_eps", "task3_default", "task3_sim_eps"]
+
+
+# ==================== ГЕОМЕТРИЯ ====================
+def read_ca(pdb_path: Path) -> np.ndarray:
+    ca = []
+    with open(pdb_path) as f:
+        for ln in f:
+            if ln.startswith(("ATOM", "HETATM")) and ln[12:16].strip() == "CA":
+                ca.append([float(ln[30:38]), float(ln[38:46]), float(ln[46:54])])
+    return np.asarray(ca, dtype=np.float64)
+
+
+def _rg_mean(pos: np.ndarray) -> float:
+    c = pos.mean(axis=-2, keepdims=True)
+    return float(np.sqrt(np.mean(np.sum((pos - c) ** 2, axis=-1))))
+
+
+def load_pos(folder: Path) -> np.ndarray | None:
+    """[S,L,3] CA-координаты сэмплов, приведённые к Å."""
+    chunks = []
+    for npz in sorted(folder.glob("batch_*.npz")):
+        try:
+            d = np.load(npz, allow_pickle=True)
+            if "pos" in d:
+                p = np.asarray(d["pos"], dtype=np.float64)
+                if p.ndim == 3 and p.shape[-1] == 3:
+                    chunks.append(p)
+        except Exception:
+            continue
+    if not chunks:
+        return None
+    pos = np.concatenate(chunks, axis=0)
+    if AUTO_UNIT and _rg_mean(pos) < 5.0:   # nm -> Å
+        pos = pos * NM_TO_ANG
+    return pos
+
+
+def kabsch(P, Q):
+    Pc = P - P.mean(0); Qc = Q - Q.mean(0)
+    V, _, Wt = np.linalg.svd(Pc.T @ Qc)
+    d = np.sign(np.linalg.det(Wt.T @ V.T))
+    R = Wt.T @ np.diag([1.0, 1.0, d]) @ V.T
+    Pr = Pc @ R.T
+    rmsd = float(np.sqrt(np.mean(np.sum((Pr - Qc) ** 2, axis=1))))
+    return rmsd, Pr, Qc
+
+
+def tm_score(Pr, Qc, L):
+    d0 = TM_COEF * (L - 15) ** (1.0 / 3.0) - TM_SHIFT
+    if d0 <= 0:
+        d0 = 1.0
+    dist = np.linalg.norm(Pr - Qc, axis=1)
+    return float(np.mean(1.0 / (1.0 + (dist / d0) ** 2)))
+
+
+def contact_map(X, cutoff):
+    L = X.shape[0]
+    dist = np.linalg.norm(X[:, None, :] - X[None, :, :], axis=-1)
+    idx = np.abs(np.subtract.outer(np.arange(L), np.arange(L)))
+    return (dist < cutoff) & (idx > MIN_SEQ_SEP)
+
+
+def q_score(sc, bc):
+    nb = bc.sum()
+    return float((sc & bc).sum() / nb) if nb else np.nan
+
+
+def rg(X):
+    c = X.mean(0)
+    return float(np.sqrt(np.mean(np.sum((X - c) ** 2, axis=1))))
+
+
+def count_xtc(folder: Path):
+    if not HAS_MDA:
+        return np.nan
+    xtc, topo = folder / "samples.xtc", folder / "topology.pdb"
+    if not (xtc.exists() and topo.exists()):
+        return np.nan
+    try:
+        u = mda.Universe(str(topo), str(xtc))
+        n = len(u.trajectory); del u; return n
+    except Exception:
+        return np.nan
+
+
+# ==================== РАЗМЕТКА ИЗ ИМЕНИ ПАПКИ ====================
+def parse_folder(name: str):
+    if name == ".ipynb_checkpoints" or "-checkpoint" in name:
+        return None
+    mr, mp, mc = REGIME_RE.search(name), PATH_RE.search(name), CORE_RE.findall(name)
+    if not (mr and mp and mc):
+        return None
+    regime = mr.group(1).lower()
+    core = mc[0]
+    mn = NOISE_RE.search(core)
+    return dict(regime=regime, task=regime.split("_", 1)[0],
+                gen_mode=regime.split("_", 1)[1], path_label=mp.group(1).upper(),
+                core=core, noise=float(mn.group(1)) if mn else np.nan)
+
+
+def bb_rmsd_pair(regime, core):
+    pa = BB_DIR / regime / core / f"{core}_pathA.pdb"
+    pb = BB_DIR / regime / core / f"{core}_pathB.pdb"
+    if not (pa.exists() and pb.exists()):
+        return None
+    ca, cb = read_ca(pa), read_ca(pb)
+    if ca.shape[0] == 0 or ca.shape[0] != cb.shape[0]:
+        return None
+    return kabsch(ca, cb)[0]
+
+
+# ==================== СЛОЙ 1: per-sample / per-ensemble ====================
+def process_ensemble(folder, info):
+    pos = load_pos(folder)
+    if pos is None or pos.shape[0] == 0:
+        return None, []
+    sp = BB_DIR / info["regime"] / info["core"] / f"{info['core']}_path{info['path_label']}.pdb"
+    pp = BB_DIR / info["regime"] / info["core"] / f"{info['core']}_path{'B' if info['path_label']=='A' else 'A'}.pdb"
+    self_bb = read_ca(sp) if sp.exists() else None
+    if self_bb is None or self_bb.shape[0] == 0 or pos.shape[1] != self_bb.shape[0]:
+        return None, []
+    L = self_bb.shape[0]
+    part_bb = read_ca(pp) if pp.exists() else None
+    has_part = part_bb is not None and part_bb.shape[0] == L
+    bc_self = contact_map(self_bb, CONTACT_CUTOFF)
+    bc_part = contact_map(part_bb, CONTACT_CUTOFF) if has_part else None
+    rg_self = rg(self_bb)
 
     rows = []
-    done_tasks = [t for t in all_tasks if is_done(status_df, t)]
-
-    for task_info in done_tasks:
-        ensemble_dir = (
-            Path(output_dir) / "ensembles"
-            / f"{task_info['task']}_{task_info['mode']}"
-            / task_info["pair_id"]
-            / f"seq{task_info['seq_type']}"
-        )
-        ref_pdb = task_info["pdb_a"] if task_info["seq_type"] == "A" else task_info["pdb_b"]
-
-        try:
-            metrics = calc_metrics(ensemble_dir, ref_pdb, threshold=2.0)
-            row = {
-                "task": task_info["task"],
-                "mode": task_info["mode"],
-                "noise_scale": task_info["noise_scale"],
-                "pair_id": task_info["pair_id"],
-                "seq_type": task_info["seq_type"],
-                **metrics,
-            }
-            rows.append(row)
-        except Exception as e:
-            logger.warning(
-                f"Could not compute metrics for "
-                f"{task_info['task']}_{task_info['mode']}/"
-                f"{task_info['pair_id']}/seq{task_info['seq_type']}: {e}"
-            )
-
-    df = pd.DataFrame(rows, columns=RESULTS_COLUMNS)
-    if not df.empty:
-        df = df.sort_values(
-            ["task", "mode", "noise_scale", "pair_id", "seq_type"]
-        ).reset_index(drop=True)
-    df.to_csv(results_path, index=False)
-    logger.info(f"Results saved: {results_path} ({len(df)} rows)")
-
-
-# ===========================================================================
-#  MAIN
-# ===========================================================================
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="BioEmu validation для baseline-экспериментов"
-    )
-    parser.add_argument("--baselines_dir", type=str, default="baselines")
-    parser.add_argument("--output_dir", type=str, default="bioemu_baselines")
-    parser.add_argument("--task", type=str, default="all")
-    parser.add_argument("--mode", type=str, default="all")
-    parser.add_argument("--num_pairs", type=int, default=10)
-    parser.add_argument("--num_samples", type=int, default=50)
-    parser.add_argument("--batch_size", type=int, default=10)
-    parser.add_argument("--threshold", type=float, default=2.0)
-    parser.add_argument("--seed", type=int, default=5)
-    parser.add_argument("--max_runs", type=int, default=-1,
-                        help="Max new runs (-1=unlimited, 0=dry-run)")
-    args = parser.parse_args()
-
-    tasks = [1, 2, 3] if args.task == "all" else [int(args.task)]
-    modes = ["default", "sim_eps"] if args.mode == "all" else [args.mode]
-
-    print(f"Tasks: {tasks}, Modes: {modes}", flush=True)
-    print(f"Num pairs/scale: {args.num_pairs}, Num samples: {args.num_samples}", flush=True)
-    print(f"Threshold: {args.threshold} Å, Seed: {args.seed}", flush=True)
-
-    # ── Сканирование baselines ──
-    print(f"Scanning {args.baselines_dir} ...", flush=True)
-    all_tasks = scan_baselines(
-        args.baselines_dir, tasks, modes, args.num_pairs, args.seed
-    )
-    print(f"Total tasks: {len(all_tasks)}", flush=True)
-
-    if not all_tasks:
-        print("ERROR: No tasks found. Check --baselines_dir and --task/--mode.", flush=True)
-        sys.exit(1)
-
-    by_task_mode = defaultdict(int)
-    for t in all_tasks:
-        by_task_mode[f"{t['task']}_{t['mode']}"] += 1
-    for key in sorted(by_task_mode.keys()):
-        print(f"  {key}: {by_task_mode[key]} tasks", flush=True)
-
-    # ── Загрузка чекпойнтов ──
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    status_df = load_status(args.output_dir)
-
-    done_count = 0
-    if not status_df.empty:
-        done_count = (status_df["status"] == "done").sum()
-    print(f"Checkpoint: {done_count} tasks already done", flush=True)
-
-    # ── Dry-run ──
-    if args.max_runs == 0:
-        print("Dry-run mode: writing status.csv, not running BioEmu", flush=True)
-        for task_info in all_tasks:
-            if not is_done(status_df, task_info):
-                status_df = update_status_row(status_df, task_info, "pending")
-        save_status(args.output_dir, status_df)
-        print(f"Status written: {args.output_dir}/status.csv", flush=True)
-        print(f"Pending: {(status_df['status'] == 'pending').sum()}", flush=True)
-        print(f"Done: {(status_df['status'] == 'done').sum()}", flush=True)
-        return
-
-    # ── Находим первую незавершённую задачу ──
-    start_idx = find_first_unfinished_index(status_df, all_tasks)
-    if start_idx is not None:
-        start_task = all_tasks[start_idx]
-        # Определяем статус для печати
-        if not status_df.empty:
-            mask = (
-                (status_df["task"] == start_task["task"]) &
-                (status_df["mode"] == start_task["mode"]) &
-                (status_df["noise_scale"] == start_task["noise_scale"]) &
-                (status_df["pair_id"] == start_task["pair_id"]) &
-                (status_df["seq_type"] == start_task["seq_type"])
-            )
-            if mask.any():
-                prev_status = status_df.loc[mask.idxmax(), "status"]
-            else:
-                prev_status = "new"
+    for s in range(pos.shape[0]):
+        X = pos[s]
+        sc = contact_map(X, CONTACT_CUTOFF)
+        r_self, Pr, Qc = kabsch(X, self_bb)
+        rec = dict(folder=folder.name, sample_idx=s, **{k: info[k] for k in
+                 ["regime", "task", "gen_mode", "path_label", "noise"]},
+                   rmsd_self=r_self, tm_self=tm_score(Pr, Qc, L),
+                   q_self=q_score(sc, bc_self), rg_ratio=rg(X) / rg_self if rg_self else np.nan)
+        if has_part:
+            r_cr, Prc, Qcc = kabsch(X, part_bb)
+            rec.update(rmsd_cross=r_cr, tm_cross=tm_score(Prc, Qcc, L),
+                       q_cross=q_score(sc, bc_part),
+                       pref="partner" if r_cr < r_self else "self")
         else:
-            prev_status = "new"
-        print(f"\nStarting from first unfinished (prev_status={prev_status}): "
-              f"{start_task['task']}_{start_task['mode']}/"
-              f"{start_task['pair_id']}/seq{start_task['seq_type']} "
-              f"(index {start_idx}/{len(all_tasks)})", flush=True)
+            rec.update(rmsd_cross=np.nan, tm_cross=np.nan, q_cross=np.nan, pref="self")
+        rows.append(rec)
+
+    df = pd.DataFrame(rows)
+    ens = dict(folder=folder.name, **{k: info[k] for k in
+             ["regime", "task", "gen_mode", "path_label", "noise"]},
+             n_raw=len(df), n_xtc=count_xtc(folder), seq_len=L,
+             rmsd_self_mean=df.rmsd_self.mean(), rmsd_self_median=df.rmsd_self.median(),
+             rmsd_self_min=df.rmsd_self.min(), rmsd_self_std=df.rmsd_self.std(),
+             frac_lt2=(df.rmsd_self < 2).mean(), frac_lt3=(df.rmsd_self < 3).mean(),
+             tm_self_mean=df.tm_self.mean(), q_self_mean=df.q_self.mean(),
+             rg_ratio_mean=df.rg_ratio.mean(),
+             partner_pref=(df.pref == "partner").mean())
+    if has_part:
+        ens.update(rmsd_cross_mean=df.rmsd_cross.mean(), tm_cross_mean=df.tm_cross.mean(),
+                   q_cross_mean=df.q_cross.mean())
     else:
-        print("\nAll tasks are done!", flush=True)
-        print("Building results.csv ...", flush=True)
-        save_results(args.output_dir, status_df, all_tasks)
-        print("Done.", flush=True)
-        return
+        ens.update(rmsd_cross_mean=np.nan, tm_cross_mean=np.nan, q_cross_mean=np.nan)
+    return ens, rows
 
-    # ── Основной цикл: начинаем с первой незавершённой ──
-    new_runs = 0
-    failed = 0
 
-    for i in range(start_idx, len(all_tasks)):
-        task_info = all_tasks[i]
+def layer1(folders):
+    ens_rows, samp_rows, skip = [], [], 0
+    for f in tqdm(folders, desc="Layer1 RMSD/TM/Q"):
+        info = parse_folder(f.name)
+        if info is None:
+            skip += 1; continue
+        ens, rows = process_ensemble(f, info)
+        if ens is None:
+            skip += 1; continue
+        ens_rows.append(ens); samp_rows.extend(rows)
+    df_e = pd.DataFrame(ens_rows); df_s = pd.DataFrame(samp_rows)
+    df_e.to_csv(PER_ENS, index=False); df_s.to_csv(PER_SAMPLE, index=False)
+    print(f"Layer1: ансамблей={len(df_e)} сэмплов={len(df_s)} пропущено={skip}")
+    return df_e
 
-        # Пропускаем только завершённые (done). pending и failed — ретрай.
-        if is_done(status_df, task_info):
-            continue
 
-        # Лимит запусков
-        if args.max_runs > 0 and new_runs >= args.max_runs:
-            print(f"Reached max_runs={args.max_runs}, stopping.", flush=True)
-            break
+# ==================== СЛОЙ 2: multistate pairs ====================
+def layer2(df_e):
+    keys = ["regime", "gen_mode", "noise", "folder"]
+    df_e = df_e.copy()
+    df_e["core"] = df_e["folder"].map(lambda n: (CORE_RE.findall(n) or [None])[0])
+    pairs, incomplete = [], 0
+    grp = df_e.groupby(["regime", "gen_mode", "noise", "core"], sort=False)
+    for _, g in tqdm(grp, desc="Layer2 pairs", total=grp.ngroups):
+        g = g.set_index("path_label")
+        if "A" not in g.index or "B" not in g.index:
+            incomplete += 1; continue
+        a, b = g.loc["A"], g.loc["B"]
+        bb = bb_rmsd_pair(a["regime"], a["core"])
+        if bb is None:
+            incomplete += 1; continue
+        succ = bool(a["tm_self_mean"] > T_TM_SELF and a["tm_cross_mean"] > T_TM_CROSS and
+                    b["tm_self_mean"] > T_TM_SELF and b["tm_cross_mean"] > T_TM_CROSS and
+                    bb > T_DISTINCT)
+        pairs.append(dict(regime=a["regime"], task=a["task"], gen_mode=a["gen_mode"],
+                          noise=a["noise"], core=a["core"], bb_rmsd_AB=bb,
+                          tm_self_A=a["tm_self_mean"], tm_cross_A=a["tm_cross_mean"],
+                          tm_self_B=b["tm_self_mean"], tm_cross_B=b["tm_cross_mean"],
+                          partner_pref_A=a["partner_pref"], partner_pref_B=b["partner_pref"],
+                          n_A=a["n_raw"], n_B=b["n_raw"], multistate_success=int(succ)))
+    pdf = pd.DataFrame(pairs)
+    pdf["bb_bucket"] = pd.cut(pdf["bb_rmsd_AB"], bins=BB_EDGES, labels=BB_LABELS,
+                              right=False, include_lowest=True)
+    pdf.to_csv(PAIRS_CSV, index=False)
+    print(f"Layer2: полных пар={len(pdf)} неполных={incomplete} "
+          f"success={pdf['multistate_success'].mean()*100:.1f}%")
+    return pdf
 
-        task_label = (
-            f"{task_info['task']}_{task_info['mode']}/"
-            f"{task_info['pair_id']}/seq{task_info['seq_type']} "
-            f"(noise={task_info['noise_scale']:.2f})"
-        )
-        print(f"\n[{new_runs + 1}] {task_label}", flush=True)
 
-        # Путь к ансамблю
-        ensemble_dir = (
-            output_dir / "ensembles"
-            / f"{task_info['task']}_{task_info['mode']}"
-            / task_info["pair_id"]
-            / f"seq{task_info['seq_type']}"
-        )
-        ensemble_dir.mkdir(parents=True, exist_ok=True)
+# ==================== СВОДНЫЕ ТАБЛИЧКИ ====================
+def write_stats(df_e, pdf):
+    g = df_e.groupby("regime")
+    sr = pd.DataFrame({
+        "n": g.size(), "rmsd_self_mean": g.rmsd_self_mean.mean(),
+        "rmsd_self_median": g.rmsd_self_median.median(), "rmsd_self_min": g.rmsd_self_min.min(),
+        "frac_lt2": g.frac_lt2.mean(), "frac_lt3": g.frac_lt3.mean(),
+        "tm_self_mean": g.tm_self_mean.mean(), "q_self_mean": g.q_self_mean.mean(),
+        "rg_ratio_mean": g.rg_ratio_mean.mean(), "partner_pref": g.partner_pref.mean(),
+        "rmsd_cross_mean": g.rmsd_cross_mean.mean(), "n_xtc_mean": g.n_xtc.mean(),
+    }).round(3).reindex([r for r in REGIMES if r in g.groups])
+    sr.to_csv(STATS_REG)
+    print("\n=== STATS BY REGIME (RMSD/TM) ===\n" + sr.to_string())
 
-        # Пропускаем если topology.pdb уже есть
-        if (ensemble_dir / "topology.pdb").exists():
-            print(f"  Already has topology.pdb, marking as done", flush=True)
-            status_df = update_status_row(status_df, task_info, "done")
-            save_status(args.output_dir, status_df)
-            continue
+    ms = (pdf.groupby(["task", "gen_mode"])
+          .agg(n_pairs=("multistate_success", "size"),
+               success_rate=("multistate_success", "mean"),
+               mean_bb=("bb_rmsd_AB", "mean")).round(3).reset_index())
+    ms["success_rate"] = (ms["success_rate"] * 100).round(1)
+    ms.to_csv(MS_STATS, index=False)
+    print("\n=== MULTISTATE SUCCESS BY TASK x MODE ===\n" + ms.to_string(index=False))
+    return sr, ms
 
-        # ── Извлекаем последовательность ──
-        pdb_path = task_info["pdb_a"] if task_info["seq_type"] == "A" else task_info["pdb_b"]
-        try:
-            sequence = get_sequence_from_pdb(pdb_path)
-            if len(sequence) == 0:
-                raise ValueError("empty sequence")
-        except Exception as e:
-            print(f"  Failed to extract sequence: {e}", flush=True)
-            status_df = update_status_row(
-                status_df, task_info, "failed", f"seq_extract: {str(e)[:100]}"
-            )
-            save_status(args.output_dir, status_df)
-            failed += 1
-            new_runs += 1
-            continue
 
-        # ── Запуск BioEmu ──
-        try:
-            print(f"  BioEmu: len={len(sequence)}, samples={args.num_samples} ...",
-                  end=" ", flush=True)
-            run_bioemu(
-                sequence=sequence,
-                output_dir=ensemble_dir,
-                num_samples=args.num_samples,
-                batch_size=args.batch_size,
-            )
-            print("done", flush=True)
-        except Exception as e:
-            print(f"FAILED: {e}", flush=True)
-            status_df = update_status_row(
-                status_df, task_info, "failed", f"bioemu: {str(e)[:100]}"
-            )
-            save_status(args.output_dir, status_df)
-            failed += 1
-            new_runs += 1
-            continue
+# ==================== ФИГУРЫ: RMSD/TM (FigA-D) ====================
+def clean(ax, xl="", yl=""):
+    if xl: ax.set_xlabel(xl)
+    if yl: ax.set_ylabel(yl)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.grid(axis="y", alpha=0.25, ls="--"); ax.grid(axis="x", alpha=0.12, ls="--")
 
-        # ── Метрики (RMSD + TM-score к СВОЕМУ референсу) ──
-        ref_pdb = task_info["pdb_a"] if task_info["seq_type"] == "A" else task_info["pdb_b"]
-        try:
-            metrics = calc_metrics(ensemble_dir, ref_pdb, threshold=args.threshold)
-            print(
-                f"  Metrics: cov={metrics['coverage']}, "
-                f"rmsd_best={metrics['rmsd_best']}, "
-                f"rmsd_mean={metrics['rmsd_mean']}, "
-                f"tm_best={metrics['tm_best']}",
-                flush=True,
-            )
-        except Exception as e:
-            print(f"  Metrics failed: {e}", flush=True)
-            status_df = update_status_row(
-                status_df, task_info, "failed", f"metrics: {str(e)[:100]}"
-            )
-            save_status(args.output_dir, status_df)
-            failed += 1
-            new_runs += 1
-            continue
 
-        # ── Сохраняем статус ──
-        status_df = update_status_row(status_df, task_info, "done")
-        save_status(args.output_dir, status_df)
-        new_runs += 1
+def fig_a(df):
+    fig, axes = plt.subplots(2, 3, figsize=(12.5, 7.2), sharex=True, sharey=True, squeeze=False)
+    XMAX, bins = 8.0, np.arange(0, 8.25, 0.25)
+    for j, p in enumerate(["A", "B"]):
+        for i, t in enumerate(TASKS):
+            ax = axes[j][i]; sub = df[(df.path_label == p) & (df.task == t)]
+            for m in ["default", "sim_eps"]:
+                s = sub[sub["gen_mode"] == m]
+                if s.empty: continue
+                v = s["rmsd_self_median"].to_numpy()
+                ax.hist(v[v <= XMAX], bins=bins, alpha=0.6, label=m,
+                        color=MODE_COLOR[m], edgecolor="white", lw=0.4)
+                no = int((v > XMAX).sum())
+                if no:
+                    ax.annotate(f">{XMAX:g}A: {no}", xy=(0.97, 0.95), xycoords="axes fraction",
+                                ha="right", va="top", fontsize=8, color="#C0392B",
+                                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#C0392B",
+                                          lw=0.6, alpha=0.85))
+            ax.axvline(2, color="#1E8449", ls="--", lw=1.2); ax.axvline(3.5, color="#C0392B", ls="--", lw=1.2)
+            ax.set_xlim(0, XMAX); ax.set_title(f"{t} | path {p}")
+            clean(ax, "median self-RMSD (A)" if j == 1 else "", "ensembles" if i == 0 else "")
+            if j == 0 and i == 0: ax.legend(title="regime", loc="upper right")
+    fig.suptitle("FigA: self-RMSD  (green <2A success, red >3.5A failure)", fontsize=13, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 1, 0.95]); _save(fig, "eval_figA_rmsd")
 
-    # ── Итоги ──
-    print(f"\n{'=' * 60}", flush=True)
-    print(f"Session complete:", flush=True)
-    print(f"  New runs:    {new_runs}", flush=True)
-    print(f"  Failed:      {failed}", flush=True)
-    print(f"  Total done:  {(status_df['status'] == 'done').sum()}", flush=True)
-    print(f"  Total tasks: {len(all_tasks)}", flush=True)
-    print(f"{'=' * 60}", flush=True)
 
-    # ── Сохраняем results.csv ──
-    print("Building results.csv ...", flush=True)
-    save_results(args.output_dir, status_df, all_tasks)
+def fig_b(df):
+    order = [r for r in REGIMES if r in set(df.regime)]
+    fig, ax = plt.subplots(figsize=(12.5, 5.2))
+    sns.boxplot(df, x="regime", y="tm_self_mean", order=order, hue="gen_mode",
+                palette=MODE_COLOR, width=0.72, linewidth=1.1, fliersize=2.5, ax=ax)
+    ax.axhline(0.5, color="#C0392B", ls="--", lw=1.2, label="TM=0.5 (same fold)")
+    ax.axhline(0.7, color="#1E8449", ls="--", lw=1.2, label="TM=0.7")
+    ax.set_ylim(0, 1.03); ax.set_ylabel("mean self-TM-score")
+    ax.set_title("FigB: self-TM by regime (length-normalized -> task3 comparable)")
+    plt.setp(ax.get_xticklabels(), rotation=28, ha="right", fontsize=9); clean(ax)
+    h, l = ax.get_legend_handles_labels()
+    fig.legend(h, l, loc="lower center", bbox_to_anchor=(0.5, -0.02), ncol=4, fontsize=9)
+    fig.tight_layout(rect=[0, 0.08, 1, 1]); _save(fig, "eval_figB_tm")
 
-    print("Done.", flush=True)
+
+def fig_c(df):
+    fig, axes = plt.subplots(2, 3, figsize=(13.0, 7.4), sharey=True, squeeze=False)
+    for j, p in enumerate(["A", "B"]):
+        for i, t in enumerate(TASKS):
+            ax = axes[j][i]; sub = df[(df.path_label == p) & (df.task == t)]
+            noises = sorted(sub["noise"].dropna().unique())
+            if not noises:
+                ax.text(0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes)
+                ax.set_title(f"{t} | path {p}"); clean(ax); continue
+            xp = np.arange(len(noises))
+            for m in ["default", "sim_eps"]:
+                s = sub[sub["gen_mode"] == m]
+                if s.empty: continue
+                med = s.groupby("noise")["partner_pref"].median().reindex(noises)
+                ax.plot(xp, med.to_numpy() * 100, "-o", color=MODE_COLOR[m], lw=2.0, ms=4.5, label=m)
+            ax.axhline(50, color="0.35", ls=":", lw=1.2)
+            ax.annotate("50% = inversion", xy=(0.98, 51), xycoords=("axes fraction", "data"),
+                        ha="right", va="bottom", fontsize=7.5, color="0.3")
+            ax.set_xticks(xp); ax.set_xticklabels([f"{n:g}" for n in noises], rotation=45, ha="right", fontsize=8)
+            ax.set_ylim(-3, 103); ax.set_title(f"{t} | path {p}")
+            clean(ax, "noise scale" if j == 1 else "", "% samples closer to partner" if i == 0 else "")
+            if j == 0 and i == 0: ax.legend(title="regime", loc="upper left")
+    fig.suptitle("FigC: state-mixing - fraction nearer PARTNER backbone (per task)", fontsize=12.5, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 1, 0.94]); _save(fig, "eval_figC_mixing")
+
+
+def fig_d(df):
+    fig, axes = plt.subplots(1, 2, figsize=(16.5, 4.8))
+    for ax, src in zip(axes, ["A", "B"]):
+        dst = "B" if src == "A" else "A"
+        sub = df[(df.path_label == src) & df.rmsd_cross_mean.notna()]
+        if sub.empty:
+            ax.text(0.5, 0.5, "no pair", ha="center", va="center", transform=ax.transAxes)
+            ax.set_title(f"cross-RMSD: {src} -> {dst}"); continue
+        hm = sub.pivot_table(index="regime", columns="noise", values="rmsd_cross_mean", aggfunc="median")
+        hm = hm.reindex([r for r in REGIMES if r in hm.index]).sort_index(axis=1)
+        sns.heatmap(hm, annot=True, fmt=".1f", cmap="RdYlGn_r", vmin=0, vmax=10,
+                    linewidths=0.6, linecolor="white", annot_kws={"fontsize": 7},
+                    cbar_kws={"label": "median cross-RMSD (A)", "shrink": 0.85}, ax=ax)
+        ax.set_title(f"cross-RMSD: ensemble {src} -> backbone {dst}", fontsize=11)
+        ax.set_xlabel("noise scale"); ax.set_ylabel("")
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=8)
+        plt.setp(ax.get_yticklabels(), rotation=0, fontsize=9)
+    fig.suptitle("FigD: low cross-RMSD = states A,B degenerate", fontsize=12.5, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 1, 0.90]); _save(fig, "eval_figD_cross")
+
+
+# ==================== ФИГУРЫ: MULTISTATE (ms Fig1-4) ====================
+def ms_fig1(pdf):
+    fig, axes = plt.subplots(1, 3, figsize=(13.5, 4.0), sharey=True, squeeze=False)
+    xmax = float(np.nanpercentile(pdf.bb_rmsd_AB, 99)) + 0.5; bins = np.arange(0, xmax, 0.5)
+    for i, t in enumerate(TASKS):
+        ax = axes[0][i]; sub = pdf[pdf.task == t]
+        for m in ["default", "sim_eps"]:
+            s = sub[sub.gen_mode == m]
+            if s.empty: continue
+            ax.hist(s.bb_rmsd_AB, bins=bins, alpha=0.6, label=m, color=MODE_COLOR[m], edgecolor="white", lw=0.4)
+        ax.axvline(T_DISTINCT, color="#C0392B", ls="--", lw=1.4)
+        ax.annotate(f"T_distinct={T_DISTINCT:g}", xy=(T_DISTINCT + 0.1, 0.95),
+                    xycoords=("data", "axes fraction"), fontsize=8, color="#C0392B", va="top")
+        ax.set_xlim(0, xmax); ax.set_title(t)
+        clean(ax, "backbone RMSD A-B (A)", "pairs" if i == 0 else "")
+        if i == 0: ax.legend(title="regime")
+    fig.suptitle("msFig1: state distinctness - calibrate T_distinct here", fontsize=12.5, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 1, 0.93]); _save(fig, "eval_ms_fig1_bb_hist")
+
+
+def ms_fig2(pdf):
+    fig, axes = plt.subplots(1, 2, figsize=(12.5, 5.2), sharey=True, squeeze=False)
+    sc = None
+    for ax, (lab, xc, yc) in zip(axes[0], [("seq_A", "tm_self_A", "tm_cross_A"),
+                                            ("seq_B", "tm_self_B", "tm_cross_B")]):
+        sc = ax.scatter(pdf[xc], pdf[yc], c=pdf.bb_rmsd_AB, cmap="RdYlGn", vmin=0, vmax=10,
+                        s=10, alpha=0.6, edgecolors="none")
+        ax.axvline(T_TM_SELF, color="#1E8449", ls="--", lw=1.2)
+        ax.axhline(T_TM_CROSS, color="#C0392B", ls="--", lw=1.2)
+        ax.add_patch(plt.Rectangle((T_TM_SELF, T_TM_CROSS), 1 - T_TM_SELF, 1 - T_TM_CROSS,
+                                   fill=False, edgecolor="black", lw=1.4, ls=":"))
+        ax.set_xlim(0, 1.02); ax.set_ylim(0, 1.02); ax.set_title(f"{lab} (box = TM success zone)")
+        clean(ax, f"tm_self ({lab}->own)", f"tm_cross ({lab}->partner)" if ax is axes[0][0] else "")
+    cb = fig.colorbar(sc, ax=axes.ravel().tolist(), shrink=0.85, pad=0.02)
+    cb.set_label("backbone RMSD A-B (A)\ngreen=distinct red=degenerate")
+    fig.suptitle("msFig2: plasticity vs degeneracy - top-right folds into both; colour = distinctness",
+                 fontsize=12, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 0.92, 0.92]); _save(fig, "eval_ms_fig2_plasticity")
+
+
+def ms_fig3(pdf, model_pdf=None):
+    order = [l for l in BB_LABELS if l in set(pdf.bb_bucket.astype(str))]
+    fig, axes = plt.subplots(1, 3, figsize=(14.0, 4.4), sharey=True, squeeze=False)
+    for i, t in enumerate(TASKS):
+        ax = axes[0][i]
+        for m in ["default", "sim_eps"]:
+            sub = pdf[(pdf.task == t) & (pdf.gen_mode == m)]
+            if sub.empty: continue
+            rate = sub.groupby("bb_bucket", observed=False).multistate_success.mean()
+            xs = [order.index(l) for l in order if l in rate.index]
+            ys = [rate[l] * 100 for l in order if l in rate.index]
+            ax.plot(xs, ys, "-o", color=MODE_COLOR[m], lw=2.0, ms=5, label=f"baseline {m}")
+            if model_pdf is not None:
+                sm = model_pdf[(model_pdf.task == t) & (model_pdf.gen_mode == m)]
+                if not sm.empty:
+                    rm = sm.groupby("bb_bucket", observed=False).multistate_success.mean()
+                    xm = [order.index(l) for l in order if l in rm.index]
+                    ym = [rm[l] * 100 for l in order if l in rm.index]
+                    ax.plot(xm, ym, "--s", color="#8E44AD", lw=2.0, ms=5, label=f"model {m}")
+        ax.set_xticks(range(len(order))); ax.set_xticklabels(order, rotation=45, ha="right", fontsize=8)
+        ax.set_ylim(-3, 103); ax.set_title(t)
+        clean(ax, "backbone RMSD A-B bucket (A)", "multistate success (%)" if i == 0 else "")
+        if i == 0: ax.legend(fontsize=8)
+    fig.suptitle("msFig3: success vs state distinctness - model must sit ABOVE baseline at large RMSD",
+                 fontsize=12, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 1, 0.92]); _save(fig, "eval_ms_fig3_success_vs_bb")
+
+
+def ms_fig4(pdf):
+    piv = (pdf.pivot_table(index="regime", columns="noise", values="multistate_success", aggfunc="mean") * 100)
+    piv = piv.reindex([r for r in REGIMES if r in piv.index]).sort_index(axis=1)
+    fig, ax = plt.subplots(figsize=(max(9, 0.55 * piv.shape[1]), 0.7 * piv.shape[0] + 1.6))
+    sns.heatmap(piv, annot=True, fmt=".0f", cmap="RdYlGn", vmin=0, vmax=100,
+                linewidths=0.6, linecolor="white", annot_kws={"fontsize": 7},
+                cbar_kws={"label": "success rate (%)", "shrink": 0.85}, ax=ax)
+    ax.set_title("msFig4: multistate success by regime x noise (red = pair not designable)", fontsize=11.5)
+    ax.set_xlabel("noise scale"); ax.set_ylabel("")
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=8)
+    plt.setp(ax.get_yticklabels(), rotation=0, fontsize=9)
+    fig.tight_layout(); _save(fig, "eval_ms_fig4_success_grid")
+
+
+def _save(fig, stem):
+    fig.savefig(OUT / f"{stem}.png"); fig.savefig(OUT / f"{stem}.pdf"); plt.close(fig)
+
+
+# ==================== MAIN ====================
+def main():
+    folders = sorted([p for p in BIO_DIR.iterdir() if p.is_dir()
+                      and p.name != ".ipynb_checkpoints" and "-checkpoint" not in p.name])
+    if MS_LIMIT > 0:
+        folders = folders[:MS_LIMIT]
+    print(f"Ансамблей к обработке: {len(folders)}  |  MDAnalysis для n_xtc: {'да' if HAS_MDA else 'НЕТ (n_xtc=NaN)'}")
+    if folders:
+        pr = load_pos(folders[0])
+        if pr is not None:
+            print(f"[unit-check] pos shape={pr.shape}, median Rg={_rg_mean(pr):.2f} A (ожидаем ~15-25)")
+
+    df_e = layer1(folders)
+    if MS_LIMIT > 0:
+        df_e = df_e.sample(min(MS_LIMIT, len(df_e)), random_state=0)
+    pdf = layer2(df_e)
+
+    model_pdf = None
+    if MODEL_PAIRS and Path(MODEL_PAIRS).exists():
+        model_pdf = pd.read_csv(MODEL_PAIRS)
+        model_pdf["bb_bucket"] = pd.cut(model_pdf.bb_rmsd_AB, bins=BB_EDGES, labels=BB_LABELS,
+                                        right=False, include_lowest=True)
+        print(f"[model] наложил кривую модели ({len(model_pdf)} пар)")
+
+    write_stats(df_e, pdf)
+    fig_a(df_e); fig_b(df_e); fig_c(df_e); fig_d(df_e)
+    ms_fig1(pdf); ms_fig2(pdf); ms_fig3(pdf, model_pdf); ms_fig4(pdf)
+    print("\nВСЁ. Таблички и фигуры в:", OUT)
 
 
 if __name__ == "__main__":
