@@ -1,0 +1,15 @@
+{
+  "trajectory_engine": "mdtraj",
+  "units": "Angstrom",
+  "radii": [
+    2,
+    3
+  ],
+  "distinct": 4.0,
+  "min_fraction": 0.05,
+  "scaffold_range": null,
+  "overlap": "excluded from two-state support; included in own-target coverage",
+  "denominators": "success rates: complete pairs; observed_success_yield: all valid generated pairs",
+  "uncertainty": "Wilson for binary pair rates; pair bootstrap for one-attempt mean; one-attempt all-zero bootstrap can be degenerate",
+  "caveat": "Support is not evidence of bimodality or experimental folding"
+}

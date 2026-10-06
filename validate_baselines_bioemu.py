@@ -1,545 +1,398 @@
 #!/usr/bin/env python3
+"""Filtered BioEmu evaluation. Run from project root; see --help.
+
+State membership: CA RMSD <= radius; samples in BOTH neighborhoods are
+ambiguous, never assigned arbitrarily. Two-state support is undefined for
+targets separated by less than --distinct. It is NOT a bimodality test.
+All metrics use one-sequence ensembles; best2 selects between seq_A/seq_B.
 """
-ПОЛНАЯ ВАЛИДАЦИЯ БЕЙЗЛАЙНА С НУЛЯ (самодостаточная).
-
-Читает ТОЛЬКО целые источники:
-  bioemu_baselines/<folder>/batch_*.npz   (координаты сэмплов, nm -> приводим к Å)
-  baselines/<regime>/<core>/<core>_path{A,B}.pdb   (бэкбоны, Å)
-
-Пишет в bioemu_plots/bioemu_baselines_statistics/:
-  Таблички:
-    bioemu_eval_per_sample.csv        метрики на каждый сэмпл
-    bioemu_eval_per_ensemble.csv      агрегат на каждый ансамбль (+ FigA-D источник)
-    bioemu_eval_stats_by_regime.csv   сводка по 6 regime
-    bioemu_multistate_pairs.csv       пары A+B + bb_rmsd_AB + multistate_success
-    bioemu_multistate_stats.csv       success-rate по regime/task/noise
-  Графики (подписи на английском, читабельный масштаб):
-    eval_figA_rmsd.png/pdf            self-RMSD distributions (path x task)
-    eval_figB_tm.png/pdf              self-TM boxplot by regime
-    eval_figC_mixing.png/pdf          state-mixing partner_pref vs noise (per task)
-    eval_figD_cross.png/pdf           cross-RMSD heatmaps A->B and B->A
-    eval_ms_fig1_bb_hist.png/pdf      калибровка T_distinct (распределение bb_rmsd_AB)
-    eval_ms_fig2_plasticity.png/pdf   tm_self vs tm_cross, цвет = bb (пластичность vs вырождение)
-    eval_ms_fig3_success_vs_bb.png/pdf  HEADLINE: success-rate vs bb-бакет (+ хук модели)
-    eval_ms_fig4_success_grid.png/pdf   success-rate regime x noise
-
-Зависимости: numpy pandas matplotlib seaborn tqdm. MDAnalysis опционален (для n_states_xtc).
-Быстрый тест:  MS_LIMIT=300 python run_full_validation.py
-Хук модели:    MODEL_PAIRS=my_pairs.csv python run_full_validation.py
-"""
-import os
+import argparse
+import importlib.util
+import json
 import re
-import warnings
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import seaborn as sns
-from tqdm import tqdm
 
-warnings.filterwarnings("ignore")
-
-try:
-    import MDAnalysis as mda
-    HAS_MDA = True
-except Exception:
-    HAS_MDA = False
-
-# ==================== ПУТИ ====================
-BASE = Path("/home/domain/aristowi/la-proteina-main")
-BIO_DIR = BASE / "bioemu_baselines"
-BB_DIR = BASE / "baselines"
-OUT = BASE / "bioemu_plots" / "bioemu_baselines_statistics"
-OUT.mkdir(parents=True, exist_ok=True)
-
-PER_SAMPLE = OUT / "bioemu_eval_per_sample.csv"
-PER_ENS = OUT / "bioemu_eval_per_ensemble.csv"
-STATS_REG = OUT / "bioemu_eval_stats_by_regime.csv"
-PAIRS_CSV = OUT / "bioemu_multistate_pairs.csv"
-MS_STATS = OUT / "bioemu_multistate_stats.csv"
-MODEL_PAIRS = os.environ.get("MODEL_PAIRS", "").strip()
-MS_LIMIT = int(os.environ.get("MS_LIMIT", "0"))
-
-# ==================== ГЕОМЕТРИЧЕСКИЕ КОНСТАНТЫ ====================
-NM_TO_ANG = 10.0
-AUTO_UNIT = True
-CONTACT_CUTOFF = 8.0
-MIN_SEQ_SEP = 4
-TM_COEF, TM_SHIFT = 1.24, 1.8
-
-# ==================== ПОРОГИ MULTISTATE (калибруй по Fig1!) ====================
-T_TM_SELF = 0.7
-T_TM_CROSS = 0.5
-T_DISTINCT = 2.0
-BB_EDGES = [0, 1, 2, 3, 4, 5, 6, 8, 10, 20, np.inf]
-BB_LABELS = ["0-1", "1-2", "2-3", "3-4", "4-5", "5-6", "6-8", "8-10", "10-20", "20+"]
-
-# ==================== РЕГУЛЯРКИ (из имени папки) ====================
-REGIME_RE = re.compile(r"(task\d+_(?:default|sim_eps))", re.I)
-PATH_RE = re.compile(r"path[_-]?([AB])(?=[_-]|$)", re.I)
-CORE_RE = re.compile(r"noise_[0-9.]+_job_[0-9]+_n_[0-9]+_id_[0-9]+")
-NOISE_RE = re.compile(r"noise_([0-9.]+)")
-
-sns.set_theme(style="whitegrid", context="paper", font="DejaVu Sans")
-plt.rcParams.update({
-    "figure.dpi": 150, "savefig.dpi": 300, "savefig.bbox": "tight",
-    "axes.titleweight": "bold", "axes.titlesize": 11, "axes.labelsize": 10,
-    "xtick.labelsize": 9, "ytick.labelsize": 9, "legend.fontsize": 9,
-    "legend.frameon": False, "font.size": 10,
-})
-MODE_COLOR = {"default": "#2E86C1", "sim_eps": "#E67E22"}
-TASKS = ["task1", "task2", "task3"]
-REGIMES = ["task1_default", "task1_sim_eps", "task2_default",
-           "task2_sim_eps", "task3_default", "task3_sim_eps"]
+CORE = re.compile(r'noise_[0-9.]+_job_\d+_n_\d+_id_\d+')
+REGIME = re.compile(r'task\d+_(?:default|sim_eps)')
+SOURCE = re.compile(r'path([AB])(?:[_-]|$)', re.I)
+COLORS = {'default': '#2878B5', 'sim_eps': '#E87524'}
 
 
-# ==================== ГЕОМЕТРИЯ ====================
-def read_ca(pdb_path: Path) -> np.ndarray:
-    ca = []
-    with open(pdb_path) as f:
-        for ln in f:
-            if ln.startswith(("ATOM", "HETATM")) and ln[12:16].strip() == "CA":
-                ca.append([float(ln[30:38]), float(ln[38:46]), float(ln[46:54])])
-    return np.asarray(ca, dtype=np.float64)
-
-
-def _rg_mean(pos: np.ndarray) -> float:
-    c = pos.mean(axis=-2, keepdims=True)
-    return float(np.sqrt(np.mean(np.sum((pos - c) ** 2, axis=-1))))
-
-
-def load_pos(folder: Path) -> np.ndarray | None:
-    """[S,L,3] CA-координаты сэмплов, приведённые к Å."""
-    chunks = []
-    for npz in sorted(folder.glob("batch_*.npz")):
-        try:
-            d = np.load(npz, allow_pickle=True)
-            if "pos" in d:
-                p = np.asarray(d["pos"], dtype=np.float64)
-                if p.ndim == 3 and p.shape[-1] == 3:
-                    chunks.append(p)
-        except Exception:
+def pdb_ca(path):
+    xyz, keys = [], []
+    seen = set()
+    for line in path.read_text().splitlines():
+        if line.startswith('ENDMDL'):
+            break
+        if not line.startswith('ATOM') or line[12:16].strip() != 'CA':
             continue
-    if not chunks:
-        return None
-    pos = np.concatenate(chunks, axis=0)
-    if AUTO_UNIT and _rg_mean(pos) < 5.0:   # nm -> Å
-        pos = pos * NM_TO_ANG
-    return pos
+        if line[16:17] not in (' ', 'A'):
+            continue
+        key = (line[21:22], line[22:27])
+        if key in seen:
+            continue
+        seen.add(key)
+        xyz.append([float(line[30:38]), float(line[38:46]), float(line[46:54])])
+        keys.append(key)
+    x = np.asarray(xyz, dtype=float)
+    if len(x) < 3 or not np.isfinite(x).all():
+        raise ValueError('PDB has fewer than three CA atoms or nonfinite coordinates')
+    if len({k[0] for k in keys}) != 1:
+        raise ValueError('Only single-chain baselines are supported')
+    return x, keys
 
 
-def kabsch(P, Q):
-    Pc = P - P.mean(0); Qc = Q - Q.mean(0)
-    V, _, Wt = np.linalg.svd(Pc.T @ Qc)
-    d = np.sign(np.linalg.det(Wt.T @ V.T))
-    R = Wt.T @ np.diag([1.0, 1.0, d]) @ V.T
-    Pr = Pc @ R.T
-    rmsd = float(np.sqrt(np.mean(np.sum((Pr - Qc) ** 2, axis=1))))
-    return rmsd, Pr, Qc
+def fit(x, y, indices=None):
+    """Row-vector Kabsch rotation, fitted on optional indices; no atom rejection."""
+    p, q = (x, y) if indices is None else (x[indices], y[indices])
+    cx, cy = p.mean(0), q.mean(0)
+    u, _, vt = np.linalg.svd((p-cx).T @ (q-cy))
+    d = np.eye(3)
+    d[-1, -1] = np.linalg.det(u @ vt)
+    return (x-cx) @ (u @ d @ vt) + cy
 
 
-def tm_score(Pr, Qc, L):
-    d0 = TM_COEF * (L - 15) ** (1.0 / 3.0) - TM_SHIFT
-    if d0 <= 0:
-        d0 = 1.0
-    dist = np.linalg.norm(Pr - Qc, axis=1)
-    return float(np.mean(1.0 / (1.0 + (dist / d0) ** 2)))
+def rmsd(x, y):
+    return float(np.sqrt(np.mean(np.sum((fit(x, y)-y)**2, axis=1))))
 
 
-def contact_map(X, cutoff):
-    L = X.shape[0]
-    dist = np.linalg.norm(X[:, None, :] - X[None, :, :], axis=-1)
-    idx = np.abs(np.subtract.outer(np.arange(L), np.arange(L)))
-    return (dist < cutoff) & (idx > MIN_SEQ_SEP)
+def discover_pairs(base, scaffold, diagnostics):
+    pairs = {}
+    for directory in sorted(base.glob('task*/*')):
+        if not directory.is_dir() or not REGIME.fullmatch(directory.parent.name) or not CORE.fullmatch(directory.name):
+            continue
+        regime, core = directory.parent.name, directory.name
+        try:
+            paths = {}
+            for source in 'AB':
+                path = directory / f'{core}_path{source}.pdb'
+                if not path.exists():
+                    path = directory / f'path{source}.pdb'
+                paths[source] = path
+            a, ka = pdb_ca(paths['A'])
+            b, kb = pdb_ca(paths['B'])
+            if ka != kb or a.shape != b.shape:
+                raise ValueError('A/B residue numbering or CA count mismatch')
+            pair = dict(regime=regime, task=regime.split('_')[0], mode=regime.split('_', 1)[1],
+                        core=core, noise=float(core.split('_')[1]), length=len(a),
+                        backbone_rmsd_AB=rmsd(a, b), A=a, B=b,
+                        pdb_A=str(paths['A']), pdb_B=str(paths['B']))
+            if scaffold and pair['task'] in ('task2', 'task3'):
+                start, stop = scaffold
+                if not 1 <= start <= stop <= len(a):
+                    raise ValueError('Scaffold range exceeds chain length')
+                free = np.arange(start-1, stop)
+                motif = np.setdiff1d(np.arange(len(a)), free)
+                if len(motif) < 3 or len(free) < 3:
+                    raise ValueError('At least three CA atoms required in scaffold and motif')
+                aligned = fit(b, a, motif)
+                pair['scaffold_shape_rmsd_AB'] = rmsd(b[free], a[free])
+                pair['scaffold_motion_after_motif_fit_AB'] = float(np.sqrt(np.mean(np.sum((aligned[free]-a[free])**2, axis=1))))
+                pair['motif_fit_rmsd_AB'] = float(np.sqrt(np.mean(np.sum((aligned[motif]-a[motif])**2, axis=1))))
+            pairs[(regime, core)] = pair
+            diagnostics.append(dict(regime=regime, core=core, status='OK'))
+        except Exception as exc:
+            diagnostics.append(dict(regime=regime, core=core, status='INVALID_PAIR', detail=str(exc)))
+    return pairs
 
 
-def q_score(sc, bc):
-    nb = bc.sum()
-    return float((sc & bc).sum() / nb) if nb else np.nan
-
-
-def rg(X):
-    c = X.mean(0)
-    return float(np.sqrt(np.mean(np.sum((X - c) ** 2, axis=1))))
-
-
-def count_xtc(folder: Path):
-    if not HAS_MDA:
-        return np.nan
-    xtc, topo = folder / "samples.xtc", folder / "topology.pdb"
-    if not (xtc.exists() and topo.exists()):
-        return np.nan
+def raw_count(folder):
+    count = 0
+    files = sorted(folder.glob('batch_*.npz'))
     try:
-        u = mda.Universe(str(topo), str(xtc))
-        n = len(u.trajectory); del u; return n
-    except Exception:
-        return np.nan
+        for path in files:
+            with np.load(path, allow_pickle=False) as archive:
+                if 'pos' not in archive:
+                    raise ValueError(f'{path.name}: no pos array')
+                count += len(archive['pos'])
+        return (count if files else np.nan), ''
+    except Exception as exc:
+        return np.nan, str(exc)
 
 
-# ==================== РАЗМЕТКА ИЗ ИМЕНИ ПАПКИ ====================
-def parse_folder(name: str):
-    if name == ".ipynb_checkpoints" or "-checkpoint" in name:
-        return None
-    mr, mp, mc = REGIME_RE.search(name), PATH_RE.search(name), CORE_RE.findall(name)
-    if not (mr and mp and mc):
-        return None
-    regime = mr.group(1).lower()
-    core = mc[0]
-    mn = NOISE_RE.search(core)
-    return dict(regime=regime, task=regime.split("_", 1)[0],
-                gen_mode=regime.split("_", 1)[1], path_label=mp.group(1).upper(),
-                core=core, noise=float(mn.group(1)) if mn else np.nan)
+def trajectory_reader():
+    if importlib.util.find_spec('mdtraj') is not None:
+        import mdtraj as md
+        def read(folder):
+            trajectory = md.load(str(folder/'samples.xtc'), top=str(folder/'topology.pdb'))
+            indices = trajectory.topology.select('name CA')
+            if len(indices) != trajectory.topology.n_residues:
+                raise ValueError('Topology must contain exactly one CA per residue')
+            # MDTraj always exposes coordinates in nm, not guessed from size.
+            return trajectory.xyz[:, indices, :].astype(float)*10.0
+        return read, 'mdtraj'
+    if importlib.util.find_spec('MDAnalysis') is not None:
+        import MDAnalysis as mda
+        def read(folder):
+            universe = mda.Universe(str(folder/'topology.pdb'), str(folder/'samples.xtc'))
+            ca = universe.select_atoms('name CA')
+            if len(ca) != len(universe.residues):
+                raise ValueError('Topology must contain exactly one CA per residue')
+            # MDAnalysis converts XTC coordinates to Angstrom by default.
+            return np.asarray([ca.positions.copy() for _ in universe.trajectory], dtype=float)
+        return read, 'MDAnalysis'
+    raise SystemExit('Install an XTC reader in this environment: python -m pip install mdtraj')
 
 
-def bb_rmsd_pair(regime, core):
-    pa = BB_DIR / regime / core / f"{core}_pathA.pdb"
-    pb = BB_DIR / regime / core / f"{core}_pathB.pdb"
-    if not (pa.exists() and pb.exists()):
-        return None
-    ca, cb = read_ca(pa), read_ca(pb)
-    if ca.shape[0] == 0 or ca.shape[0] != cb.shape[0]:
-        return None
-    return kabsch(ca, cb)[0]
+def memberships(ra, rb, radius, distinct, minimum):
+    near_a, near_b = ra <= radius, rb <= radius
+    only_a, only_b = near_a & ~near_b, near_b & ~near_a
+    pa, pb = float(only_a.mean()), float(only_b.mean())
+    return dict(p_near_A=float(near_a.mean()), p_near_B=float(near_b.mean()),
+                p_exclusive_A=pa, p_exclusive_B=pb,
+                p_overlap=float((near_a & near_b).mean()),
+                p_neither=float((~near_a & ~near_b).mean()),
+                support_score=min(pa, pb) if distinct else np.nan,
+                two_state_success=int(distinct and pa >= minimum and pb >= minimum))
 
 
-# ==================== СЛОЙ 1: per-sample / per-ensemble ====================
-def process_ensemble(folder, info):
-    pos = load_pos(folder)
-    if pos is None or pos.shape[0] == 0:
-        return None, []
-    sp = BB_DIR / info["regime"] / info["core"] / f"{info['core']}_path{info['path_label']}.pdb"
-    pp = BB_DIR / info["regime"] / info["core"] / f"{info['core']}_path{'B' if info['path_label']=='A' else 'A'}.pdb"
-    self_bb = read_ca(sp) if sp.exists() else None
-    if self_bb is None or self_bb.shape[0] == 0 or pos.shape[1] != self_bb.shape[0]:
-        return None, []
-    L = self_bb.shape[0]
-    part_bb = read_ca(pp) if pp.exists() else None
-    has_part = part_bb is not None and part_bb.shape[0] == L
-    bc_self = contact_map(self_bb, CONTACT_CUTOFF)
-    bc_part = contact_map(part_bb, CONTACT_CUTOFF) if has_part else None
-    rg_self = rg(self_bb)
+def interval(values, rng, binary=True):
+    x = np.asarray(values, dtype=float)
+    x = x[np.isfinite(x)]
+    if not len(x):
+        return np.nan, np.nan, np.nan
+    if binary:
+        # Wilson interval remains nonzero when no successes were observed.
+        n, p, z = len(x), float(x.mean()), 1.95996398454
+        denom = 1+z*z/n
+        center = (p+z*z/(2*n))/denom
+        half = z*np.sqrt(p*(1-p)/n+z*z/(4*n*n))/denom
+        return p, max(0.,center-half), min(1.,center+half)
+    # Resample pairs, never individual BioEmu frames.
+    means = x[rng.integers(0, len(x), (1000, len(x)))].mean(axis=1)
+    return float(x.mean()), float(np.quantile(means, .025)), float(np.quantile(means, .975))
 
+
+def aggregate(pairs, sequences, radii, distinct_cutoff):
+    records = []
+    for pair in pairs.values():
+        for radius in radii:
+            row = {k:v for k,v in pair.items() if k not in ('A', 'B')}
+            row.update(radius=radius, distinct=pair['backbone_rmsd_AB'] >= distinct_cutoff,
+                       distinct_threshold=distinct_cutoff)
+            candidates = []
+            for source in 'AB':
+                key = (pair['regime'], pair['core'], source, radius)
+                candidate = sequences.get(key)
+                if candidate is not None:
+                    candidates.append(candidate)
+                row[f'seq{source}_available'] = candidate is not None
+                for field in ('two_state_success', 'support_score', 'p_self', 'p_cross'):
+                    row[f'seq{source}_{field}'] = candidate[field] if candidate is not None else np.nan
+            row['complete'] = len(candidates) == 2
+            row['n_candidates_scored'] = len(candidates)
+            # Report one-attempt average and best2 only with BOTH candidates.
+            row['one_attempt_success'] = np.mean([c['two_state_success'] for c in candidates]) if row['complete'] else np.nan
+            row['best2_success'] = max(c['two_state_success'] for c in candidates) if row['complete'] else np.nan
+            row['best2_support'] = max(c['support_score'] for c in candidates) if row['complete'] and row['distinct'] else np.nan
+            row['observed_success_any'] = max([c['two_state_success'] for c in candidates], default=0)
+            records.append(row)
+    return pd.DataFrame(records)
+
+
+def summaries(pair_df):
+    rows, rng = [], np.random.default_rng(47)
+    for keys, group in pair_df.groupby(['task', 'mode', 'noise', 'radius']):
+        row = dict(zip(['task', 'mode', 'noise', 'radius'], keys))
+        complete = group[group['complete']]
+        distinct = complete[complete['distinct']]
+        row.update(n_generated_pairs=len(group), n_complete=len(complete),
+                   n_generated_distinct=int(group['distinct'].sum()), n_complete_distinct=len(distinct),
+                   evaluation_coverage=len(complete)/len(group),
+                   distinct_fraction=float(group['distinct'].mean()),
+                   observed_success_yield=float(group['observed_success_any'].mean()),
+                   median_AB_rmsd=float(group['backbone_rmsd_AB'].median()),
+                   median_best2_support=distinct['best2_support'].median())
+        for strategy in ('seqA', 'seqB', 'one_attempt', 'best2'):
+            column = strategy+'_two_state_success' if strategy in ('seqA','seqB') else strategy+'_success'
+            for label, data in (('all_complete', complete), ('distinct_complete', distinct)):
+                value, low, high = interval(data[column], rng, binary=strategy!='one_attempt')
+                row[f'{strategy}_{label}'] = value
+                row[f'{strategy}_{label}_low'] = low
+                row[f'{strategy}_{label}_high'] = high
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def line_plot(df, column, ylabel, title, out, name, scale=100, ylim=True):
+    tasks = sorted(df['task'].unique())
+    fig, axes = plt.subplots(1, len(tasks), figsize=(5.2*len(tasks), 4.4), squeeze=False)
+    for ax, task in zip(axes[0], tasks):
+        subset = df[df['task'] == task]
+        plotted = False
+        for (mode, radius), g in subset.groupby(['mode', 'radius']):
+            g = g.sort_values('noise')
+            if not g[column].notna().any():
+                continue
+            plotted = True
+            color = COLORS.get(mode, 'gray')
+            ax.plot(g['noise'], scale*g[column], marker='o', ms=4,
+                    ls='-' if radius == 2 else '--', color=color, label=f'{mode}, r={radius:g} Å')
+            if column+'_low' in g:
+                ax.fill_between(g['noise'].to_numpy(), scale*g[column+'_low'].to_numpy(),
+                                scale*g[column+'_high'].to_numpy(), color=color, alpha=.10)
+        if not plotted:
+            ax.text(.5,.5,'N/A: no eligible evaluated pairs', ha='center', transform=ax.transAxes, fontsize=9)
+        positive = subset.loc[subset['noise'] > 0, 'noise']
+        if len(positive):
+            ax.set_xscale('symlog', linthresh=float(positive.min()))
+        ax.set(title=task, xlabel='Initialization noise scale', ylabel=ylabel)
+        if ylim:
+            ax.set_ylim(-2,102)
+        ax.grid(alpha=.2)
+        if plotted:
+            ax.legend(fontsize=7)
+    fig.suptitle(title, fontsize=11)
+    fig.tight_layout()
+    for extension in ('png', 'pdf'):
+        fig.savefig(out/f'{name}.{extension}', dpi=180)
+    plt.close(fig)
+
+
+def plots(pair_df, seq_df, summary, out):
+    plt.rcParams.update({'axes.spines.top':False, 'axes.spines.right':False})
+    criterion=f'Target A–B ≥ {pair_df["distinct_threshold"].iloc[0]:g} Å; each exclusive fraction ≥ {seq_df["minimum_fraction"].iloc[0]:.0%}; filtered XTC'
+    line_plot(summary,'best2_all_complete','Success (%)','Best of two: success among all COMPLETE pairs\n'+criterion,out,'v2_01_success_all')
+    line_plot(summary,'best2_distinct_complete','Success (%)','Best of two: success among DISTINCT COMPLETE pairs\n'+criterion,out,'v2_02_success_distinct')
+    line_plot(summary,'one_attempt_all_complete','Success (%)','One-attempt baseline: mean of seq_A and seq_B success\n'+criterion,out,'v2_03_one_attempt')
+    line_plot(summary,'median_best2_support','Median exclusive min(pA,pB) (%)','Two-state support only for DISTINCT COMPLETE pairs',out,'v2_04_support')
+    line_plot(summary,'distinct_fraction','Distinct pairs (%)','Fraction of generated pairs meeting the separation threshold',out,'v2_05_distinct_fraction')
+    line_plot(summary,'median_AB_rmsd','Median target A–B RMSD (Å)','Final structural separation',out,'v2_06_AB_rmsd',scale=1,ylim=False)
+    for source in 'AB':
+        g = seq_df[seq_df['sequence_source']==source]
+        for field in ('p_self','p_cross'):
+            data = g.groupby(['task','mode','noise','radius'])[field].mean().reset_index()
+            line_plot(data,field,'Mean neighborhood coverage (%)',f'seq_{source}: {field} (overlap INCLUDED)',out,f'v2_07_seq{source}_{field}')
     rows = []
-    for s in range(pos.shape[0]):
-        X = pos[s]
-        sc = contact_map(X, CONTACT_CUTOFF)
-        r_self, Pr, Qc = kabsch(X, self_bb)
-        rec = dict(folder=folder.name, sample_idx=s, **{k: info[k] for k in
-                 ["regime", "task", "gen_mode", "path_label", "noise"]},
-                   rmsd_self=r_self, tm_self=tm_score(Pr, Qc, L),
-                   q_self=q_score(sc, bc_self), rg_ratio=rg(X) / rg_self if rg_self else np.nan)
-        if has_part:
-            r_cr, Prc, Qcc = kabsch(X, part_bb)
-            rec.update(rmsd_cross=r_cr, tm_cross=tm_score(Prc, Qcc, L),
-                       q_cross=q_score(sc, bc_part),
-                       pref="partner" if r_cr < r_self else "self")
-        else:
-            rec.update(rmsd_cross=np.nan, tm_cross=np.nan, q_cross=np.nan, pref="self")
-        rows.append(rec)
-
-    df = pd.DataFrame(rows)
-    ens = dict(folder=folder.name, **{k: info[k] for k in
-             ["regime", "task", "gen_mode", "path_label", "noise"]},
-             n_raw=len(df), n_xtc=count_xtc(folder), seq_len=L,
-             rmsd_self_mean=df.rmsd_self.mean(), rmsd_self_median=df.rmsd_self.median(),
-             rmsd_self_min=df.rmsd_self.min(), rmsd_self_std=df.rmsd_self.std(),
-             frac_lt2=(df.rmsd_self < 2).mean(), frac_lt3=(df.rmsd_self < 3).mean(),
-             tm_self_mean=df.tm_self.mean(), q_self_mean=df.q_self.mean(),
-             rg_ratio_mean=df.rg_ratio.mean(),
-             partner_pref=(df.pref == "partner").mean())
-    if has_part:
-        ens.update(rmsd_cross_mean=df.rmsd_cross.mean(), tm_cross_mean=df.tm_cross.mean(),
-                   q_cross_mean=df.q_cross.mean())
-    else:
-        ens.update(rmsd_cross_mean=np.nan, tm_cross_mean=np.nan, q_cross_mean=np.nan)
-    return ens, rows
+    for keys,g in seq_df.drop_duplicates('bioemu_folder').groupby(['task','mode','noise']):
+        row = dict(zip(['task','mode','noise'],keys))
+        row.update(radius=2, retained=g['retained_fraction'].mean())
+        rows.append(row)
+    line_plot(pd.DataFrame(rows),'retained','Mean retained samples (%)','BioEmu filtering: remaining / raw samples',out,'v2_08_retained')
+    overlap=seq_df.groupby(['task','mode','noise','radius'])['p_overlap'].mean().reset_index()
+    line_plot(overlap,'p_overlap','Mean ambiguous samples (%)','Samples within BOTH target neighborhoods; excluded from state support',out,'v2_11_overlap')
+    tasks = sorted(seq_df['task'].unique())
+    fig, axes = plt.subplots(2,len(tasks),figsize=(5.2*len(tasks),8),squeeze=False)
+    for i,radius in enumerate(sorted(seq_df['radius'].unique())):
+        for j,task in enumerate(tasks):
+            ax = axes[i,j]
+            g = seq_df[(seq_df['task']==task)&(seq_df['radius']==radius)&seq_df['distinct']]
+            for source,marker,color in (('A','o','#2878B5'),('B','s','#E87524')):
+                s = g[g['sequence_source']==source]
+                ax.scatter(100*s['p_exclusive_A'],100*s['p_exclusive_B'],s=12,marker=marker,color=color,alpha=.45,label=f'seq_{source}')
+            if g.empty:
+                ax.text(.5,.5,'N/A: no distinct evaluated pairs',ha='center',transform=ax.transAxes,fontsize=8)
+            ax.set(title=f'{task}; r={radius:g} Å',xlabel='Exclusive A (%)',ylabel='Exclusive B (%)',xlim=(-2,102),ylim=(-2,102))
+            ax.grid(alpha=.2); ax.legend(fontsize=8)
+    fig.suptitle('Separate sequences, DISTINCT targets only; overlapping neighborhoods excluded')
+    fig.tight_layout(); fig.savefig(out/'v2_09_distinct_sequence_support.png',dpi=180); plt.close(fig)
+    diagnostic = pair_df.drop_duplicates(['regime','core'])
+    if 'scaffold_motion_after_motif_fit_AB' in diagnostic:
+        data = diagnostic.groupby(['task','mode','noise'])['scaffold_motion_after_motif_fit_AB'].median().reset_index()
+        data['radius']=2
+        line_plot(data,'scaffold_motion_after_motif_fit_AB','Scaffold RMSD after motif fit (Å)',
+                  'Conditional tasks: scaffold displacement relative to motif',out,'v2_10_scaffold_motion',scale=1,ylim=False)
 
 
-def layer1(folders):
-    ens_rows, samp_rows, skip = [], [], 0
-    for f in tqdm(folders, desc="Layer1 RMSD/TM/Q"):
-        info = parse_folder(f.name)
-        if info is None:
-            skip += 1; continue
-        ens, rows = process_ensemble(f, info)
-        if ens is None:
-            skip += 1; continue
-        ens_rows.append(ens); samp_rows.extend(rows)
-    df_e = pd.DataFrame(ens_rows); df_s = pd.DataFrame(samp_rows)
-    df_e.to_csv(PER_ENS, index=False); df_s.to_csv(PER_SAMPLE, index=False)
-    print(f"Layer1: ансамблей={len(df_e)} сэмплов={len(df_s)} пропущено={skip}")
-    return df_e
-
-
-# ==================== СЛОЙ 2: multistate pairs ====================
-def layer2(df_e):
-    keys = ["regime", "gen_mode", "noise", "folder"]
-    df_e = df_e.copy()
-    df_e["core"] = df_e["folder"].map(lambda n: (CORE_RE.findall(n) or [None])[0])
-    pairs, incomplete = [], 0
-    grp = df_e.groupby(["regime", "gen_mode", "noise", "core"], sort=False)
-    for _, g in tqdm(grp, desc="Layer2 pairs", total=grp.ngroups):
-        g = g.set_index("path_label")
-        if "A" not in g.index or "B" not in g.index:
-            incomplete += 1; continue
-        a, b = g.loc["A"], g.loc["B"]
-        bb = bb_rmsd_pair(a["regime"], a["core"])
-        if bb is None:
-            incomplete += 1; continue
-        succ = bool(a["tm_self_mean"] > T_TM_SELF and a["tm_cross_mean"] > T_TM_CROSS and
-                    b["tm_self_mean"] > T_TM_SELF and b["tm_cross_mean"] > T_TM_CROSS and
-                    bb > T_DISTINCT)
-        pairs.append(dict(regime=a["regime"], task=a["task"], gen_mode=a["gen_mode"],
-                          noise=a["noise"], core=a["core"], bb_rmsd_AB=bb,
-                          tm_self_A=a["tm_self_mean"], tm_cross_A=a["tm_cross_mean"],
-                          tm_self_B=b["tm_self_mean"], tm_cross_B=b["tm_cross_mean"],
-                          partner_pref_A=a["partner_pref"], partner_pref_B=b["partner_pref"],
-                          n_A=a["n_raw"], n_B=b["n_raw"], multistate_success=int(succ)))
-    pdf = pd.DataFrame(pairs)
-    pdf["bb_bucket"] = pd.cut(pdf["bb_rmsd_AB"], bins=BB_EDGES, labels=BB_LABELS,
-                              right=False, include_lowest=True)
-    pdf.to_csv(PAIRS_CSV, index=False)
-    print(f"Layer2: полных пар={len(pdf)} неполных={incomplete} "
-          f"success={pdf['multistate_success'].mean()*100:.1f}%")
-    return pdf
-
-
-# ==================== СВОДНЫЕ ТАБЛИЧКИ ====================
-def write_stats(df_e, pdf):
-    g = df_e.groupby("regime")
-    sr = pd.DataFrame({
-        "n": g.size(), "rmsd_self_mean": g.rmsd_self_mean.mean(),
-        "rmsd_self_median": g.rmsd_self_median.median(), "rmsd_self_min": g.rmsd_self_min.min(),
-        "frac_lt2": g.frac_lt2.mean(), "frac_lt3": g.frac_lt3.mean(),
-        "tm_self_mean": g.tm_self_mean.mean(), "q_self_mean": g.q_self_mean.mean(),
-        "rg_ratio_mean": g.rg_ratio_mean.mean(), "partner_pref": g.partner_pref.mean(),
-        "rmsd_cross_mean": g.rmsd_cross_mean.mean(), "n_xtc_mean": g.n_xtc.mean(),
-    }).round(3).reindex([r for r in REGIMES if r in g.groups])
-    sr.to_csv(STATS_REG)
-    print("\n=== STATS BY REGIME (RMSD/TM) ===\n" + sr.to_string())
-
-    ms = (pdf.groupby(["task", "gen_mode"])
-          .agg(n_pairs=("multistate_success", "size"),
-               success_rate=("multistate_success", "mean"),
-               mean_bb=("bb_rmsd_AB", "mean")).round(3).reset_index())
-    ms["success_rate"] = (ms["success_rate"] * 100).round(1)
-    ms.to_csv(MS_STATS, index=False)
-    print("\n=== MULTISTATE SUCCESS BY TASK x MODE ===\n" + ms.to_string(index=False))
-    return sr, ms
-
-
-# ==================== ФИГУРЫ: RMSD/TM (FigA-D) ====================
-def clean(ax, xl="", yl=""):
-    if xl: ax.set_xlabel(xl)
-    if yl: ax.set_ylabel(yl)
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.grid(axis="y", alpha=0.25, ls="--"); ax.grid(axis="x", alpha=0.12, ls="--")
-
-
-def fig_a(df):
-    fig, axes = plt.subplots(2, 3, figsize=(12.5, 7.2), sharex=True, sharey=True, squeeze=False)
-    XMAX, bins = 8.0, np.arange(0, 8.25, 0.25)
-    for j, p in enumerate(["A", "B"]):
-        for i, t in enumerate(TASKS):
-            ax = axes[j][i]; sub = df[(df.path_label == p) & (df.task == t)]
-            for m in ["default", "sim_eps"]:
-                s = sub[sub["gen_mode"] == m]
-                if s.empty: continue
-                v = s["rmsd_self_median"].to_numpy()
-                ax.hist(v[v <= XMAX], bins=bins, alpha=0.6, label=m,
-                        color=MODE_COLOR[m], edgecolor="white", lw=0.4)
-                no = int((v > XMAX).sum())
-                if no:
-                    ax.annotate(f">{XMAX:g}A: {no}", xy=(0.97, 0.95), xycoords="axes fraction",
-                                ha="right", va="top", fontsize=8, color="#C0392B",
-                                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#C0392B",
-                                          lw=0.6, alpha=0.85))
-            ax.axvline(2, color="#1E8449", ls="--", lw=1.2); ax.axvline(3.5, color="#C0392B", ls="--", lw=1.2)
-            ax.set_xlim(0, XMAX); ax.set_title(f"{t} | path {p}")
-            clean(ax, "median self-RMSD (A)" if j == 1 else "", "ensembles" if i == 0 else "")
-            if j == 0 and i == 0: ax.legend(title="regime", loc="upper right")
-    fig.suptitle("FigA: self-RMSD  (green <2A success, red >3.5A failure)", fontsize=13, fontweight="bold")
-    fig.tight_layout(rect=[0, 0, 1, 0.95]); _save(fig, "eval_figA_rmsd")
-
-
-def fig_b(df):
-    order = [r for r in REGIMES if r in set(df.regime)]
-    fig, ax = plt.subplots(figsize=(12.5, 5.2))
-    sns.boxplot(df, x="regime", y="tm_self_mean", order=order, hue="gen_mode",
-                palette=MODE_COLOR, width=0.72, linewidth=1.1, fliersize=2.5, ax=ax)
-    ax.axhline(0.5, color="#C0392B", ls="--", lw=1.2, label="TM=0.5 (same fold)")
-    ax.axhline(0.7, color="#1E8449", ls="--", lw=1.2, label="TM=0.7")
-    ax.set_ylim(0, 1.03); ax.set_ylabel("mean self-TM-score")
-    ax.set_title("FigB: self-TM by regime (length-normalized -> task3 comparable)")
-    plt.setp(ax.get_xticklabels(), rotation=28, ha="right", fontsize=9); clean(ax)
-    h, l = ax.get_legend_handles_labels()
-    fig.legend(h, l, loc="lower center", bbox_to_anchor=(0.5, -0.02), ncol=4, fontsize=9)
-    fig.tight_layout(rect=[0, 0.08, 1, 1]); _save(fig, "eval_figB_tm")
-
-
-def fig_c(df):
-    fig, axes = plt.subplots(2, 3, figsize=(13.0, 7.4), sharey=True, squeeze=False)
-    for j, p in enumerate(["A", "B"]):
-        for i, t in enumerate(TASKS):
-            ax = axes[j][i]; sub = df[(df.path_label == p) & (df.task == t)]
-            noises = sorted(sub["noise"].dropna().unique())
-            if not noises:
-                ax.text(0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes)
-                ax.set_title(f"{t} | path {p}"); clean(ax); continue
-            xp = np.arange(len(noises))
-            for m in ["default", "sim_eps"]:
-                s = sub[sub["gen_mode"] == m]
-                if s.empty: continue
-                med = s.groupby("noise")["partner_pref"].median().reindex(noises)
-                ax.plot(xp, med.to_numpy() * 100, "-o", color=MODE_COLOR[m], lw=2.0, ms=4.5, label=m)
-            ax.axhline(50, color="0.35", ls=":", lw=1.2)
-            ax.annotate("50% = inversion", xy=(0.98, 51), xycoords=("axes fraction", "data"),
-                        ha="right", va="bottom", fontsize=7.5, color="0.3")
-            ax.set_xticks(xp); ax.set_xticklabels([f"{n:g}" for n in noises], rotation=45, ha="right", fontsize=8)
-            ax.set_ylim(-3, 103); ax.set_title(f"{t} | path {p}")
-            clean(ax, "noise scale" if j == 1 else "", "% samples closer to partner" if i == 0 else "")
-            if j == 0 and i == 0: ax.legend(title="regime", loc="upper left")
-    fig.suptitle("FigC: state-mixing - fraction nearer PARTNER backbone (per task)", fontsize=12.5, fontweight="bold")
-    fig.tight_layout(rect=[0, 0, 1, 0.94]); _save(fig, "eval_figC_mixing")
-
-
-def fig_d(df):
-    fig, axes = plt.subplots(1, 2, figsize=(16.5, 4.8))
-    for ax, src in zip(axes, ["A", "B"]):
-        dst = "B" if src == "A" else "A"
-        sub = df[(df.path_label == src) & df.rmsd_cross_mean.notna()]
-        if sub.empty:
-            ax.text(0.5, 0.5, "no pair", ha="center", va="center", transform=ax.transAxes)
-            ax.set_title(f"cross-RMSD: {src} -> {dst}"); continue
-        hm = sub.pivot_table(index="regime", columns="noise", values="rmsd_cross_mean", aggfunc="median")
-        hm = hm.reindex([r for r in REGIMES if r in hm.index]).sort_index(axis=1)
-        sns.heatmap(hm, annot=True, fmt=".1f", cmap="RdYlGn_r", vmin=0, vmax=10,
-                    linewidths=0.6, linecolor="white", annot_kws={"fontsize": 7},
-                    cbar_kws={"label": "median cross-RMSD (A)", "shrink": 0.85}, ax=ax)
-        ax.set_title(f"cross-RMSD: ensemble {src} -> backbone {dst}", fontsize=11)
-        ax.set_xlabel("noise scale"); ax.set_ylabel("")
-        plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=8)
-        plt.setp(ax.get_yticklabels(), rotation=0, fontsize=9)
-    fig.suptitle("FigD: low cross-RMSD = states A,B degenerate", fontsize=12.5, fontweight="bold")
-    fig.tight_layout(rect=[0, 0, 1, 0.90]); _save(fig, "eval_figD_cross")
-
-
-# ==================== ФИГУРЫ: MULTISTATE (ms Fig1-4) ====================
-def ms_fig1(pdf):
-    fig, axes = plt.subplots(1, 3, figsize=(13.5, 4.0), sharey=True, squeeze=False)
-    xmax = float(np.nanpercentile(pdf.bb_rmsd_AB, 99)) + 0.5; bins = np.arange(0, xmax, 0.5)
-    for i, t in enumerate(TASKS):
-        ax = axes[0][i]; sub = pdf[pdf.task == t]
-        for m in ["default", "sim_eps"]:
-            s = sub[sub.gen_mode == m]
-            if s.empty: continue
-            ax.hist(s.bb_rmsd_AB, bins=bins, alpha=0.6, label=m, color=MODE_COLOR[m], edgecolor="white", lw=0.4)
-        ax.axvline(T_DISTINCT, color="#C0392B", ls="--", lw=1.4)
-        ax.annotate(f"T_distinct={T_DISTINCT:g}", xy=(T_DISTINCT + 0.1, 0.95),
-                    xycoords=("data", "axes fraction"), fontsize=8, color="#C0392B", va="top")
-        ax.set_xlim(0, xmax); ax.set_title(t)
-        clean(ax, "backbone RMSD A-B (A)", "pairs" if i == 0 else "")
-        if i == 0: ax.legend(title="regime")
-    fig.suptitle("msFig1: state distinctness - calibrate T_distinct here", fontsize=12.5, fontweight="bold")
-    fig.tight_layout(rect=[0, 0, 1, 0.93]); _save(fig, "eval_ms_fig1_bb_hist")
-
-
-def ms_fig2(pdf):
-    fig, axes = plt.subplots(1, 2, figsize=(12.5, 5.2), sharey=True, squeeze=False)
-    sc = None
-    for ax, (lab, xc, yc) in zip(axes[0], [("seq_A", "tm_self_A", "tm_cross_A"),
-                                            ("seq_B", "tm_self_B", "tm_cross_B")]):
-        sc = ax.scatter(pdf[xc], pdf[yc], c=pdf.bb_rmsd_AB, cmap="RdYlGn", vmin=0, vmax=10,
-                        s=10, alpha=0.6, edgecolors="none")
-        ax.axvline(T_TM_SELF, color="#1E8449", ls="--", lw=1.2)
-        ax.axhline(T_TM_CROSS, color="#C0392B", ls="--", lw=1.2)
-        ax.add_patch(plt.Rectangle((T_TM_SELF, T_TM_CROSS), 1 - T_TM_SELF, 1 - T_TM_CROSS,
-                                   fill=False, edgecolor="black", lw=1.4, ls=":"))
-        ax.set_xlim(0, 1.02); ax.set_ylim(0, 1.02); ax.set_title(f"{lab} (box = TM success zone)")
-        clean(ax, f"tm_self ({lab}->own)", f"tm_cross ({lab}->partner)" if ax is axes[0][0] else "")
-    cb = fig.colorbar(sc, ax=axes.ravel().tolist(), shrink=0.85, pad=0.02)
-    cb.set_label("backbone RMSD A-B (A)\ngreen=distinct red=degenerate")
-    fig.suptitle("msFig2: plasticity vs degeneracy - top-right folds into both; colour = distinctness",
-                 fontsize=12, fontweight="bold")
-    fig.tight_layout(rect=[0, 0, 0.92, 0.92]); _save(fig, "eval_ms_fig2_plasticity")
-
-
-def ms_fig3(pdf, model_pdf=None):
-    order = [l for l in BB_LABELS if l in set(pdf.bb_bucket.astype(str))]
-    fig, axes = plt.subplots(1, 3, figsize=(14.0, 4.4), sharey=True, squeeze=False)
-    for i, t in enumerate(TASKS):
-        ax = axes[0][i]
-        for m in ["default", "sim_eps"]:
-            sub = pdf[(pdf.task == t) & (pdf.gen_mode == m)]
-            if sub.empty: continue
-            rate = sub.groupby("bb_bucket", observed=False).multistate_success.mean()
-            xs = [order.index(l) for l in order if l in rate.index]
-            ys = [rate[l] * 100 for l in order if l in rate.index]
-            ax.plot(xs, ys, "-o", color=MODE_COLOR[m], lw=2.0, ms=5, label=f"baseline {m}")
-            if model_pdf is not None:
-                sm = model_pdf[(model_pdf.task == t) & (model_pdf.gen_mode == m)]
-                if not sm.empty:
-                    rm = sm.groupby("bb_bucket", observed=False).multistate_success.mean()
-                    xm = [order.index(l) for l in order if l in rm.index]
-                    ym = [rm[l] * 100 for l in order if l in rm.index]
-                    ax.plot(xm, ym, "--s", color="#8E44AD", lw=2.0, ms=5, label=f"model {m}")
-        ax.set_xticks(range(len(order))); ax.set_xticklabels(order, rotation=45, ha="right", fontsize=8)
-        ax.set_ylim(-3, 103); ax.set_title(t)
-        clean(ax, "backbone RMSD A-B bucket (A)", "multistate success (%)" if i == 0 else "")
-        if i == 0: ax.legend(fontsize=8)
-    fig.suptitle("msFig3: success vs state distinctness - model must sit ABOVE baseline at large RMSD",
-                 fontsize=12, fontweight="bold")
-    fig.tight_layout(rect=[0, 0, 1, 0.92]); _save(fig, "eval_ms_fig3_success_vs_bb")
-
-
-def ms_fig4(pdf):
-    piv = (pdf.pivot_table(index="regime", columns="noise", values="multistate_success", aggfunc="mean") * 100)
-    piv = piv.reindex([r for r in REGIMES if r in piv.index]).sort_index(axis=1)
-    fig, ax = plt.subplots(figsize=(max(9, 0.55 * piv.shape[1]), 0.7 * piv.shape[0] + 1.6))
-    sns.heatmap(piv, annot=True, fmt=".0f", cmap="RdYlGn", vmin=0, vmax=100,
-                linewidths=0.6, linecolor="white", annot_kws={"fontsize": 7},
-                cbar_kws={"label": "success rate (%)", "shrink": 0.85}, ax=ax)
-    ax.set_title("msFig4: multistate success by regime x noise (red = pair not designable)", fontsize=11.5)
-    ax.set_xlabel("noise scale"); ax.set_ylabel("")
-    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=8)
-    plt.setp(ax.get_yticklabels(), rotation=0, fontsize=9)
-    fig.tight_layout(); _save(fig, "eval_ms_fig4_success_grid")
-
-
-def _save(fig, stem):
-    fig.savefig(OUT / f"{stem}.png"); fig.savefig(OUT / f"{stem}.pdf"); plt.close(fig)
-
-
-# ==================== MAIN ====================
 def main():
-    folders = sorted([p for p in BIO_DIR.iterdir() if p.is_dir()
-                      and p.name != ".ipynb_checkpoints" and "-checkpoint" not in p.name])
-    if MS_LIMIT > 0:
-        folders = folders[:MS_LIMIT]
-    print(f"Ансамблей к обработке: {len(folders)}  |  MDAnalysis для n_xtc: {'да' if HAS_MDA else 'НЕТ (n_xtc=NaN)'}")
-    if folders:
-        pr = load_pos(folders[0])
-        if pr is not None:
-            print(f"[unit-check] pos shape={pr.shape}, median Rg={_rg_mean(pr):.2f} A (ожидаем ~15-25)")
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--base',type=Path,default=Path(__file__).resolve().parent)
+    parser.add_argument('--out',type=Path,default=None)
+    parser.add_argument('--distinct',type=float,default=4.)
+    parser.add_argument('--min-fraction',type=float,default=.05)
+    parser.add_argument('--scaffold-range',help='Optional 1-based inclusive range, e.g. 10:40; ONLY task2/task3, only if verified from run configs')
+    parser.add_argument('--plots-only',action='store_true')
+    args=parser.parse_args()
+    if args.distinct <= 0 or not 0 < args.min_fraction <= .5:
+        parser.error('Require distinct > 0 and 0 < min-fraction <= 0.5')
+    base=args.base.resolve(); out=args.out or base/'bioemu_plots'/'bioemu_baselines_statistics'
+    out.mkdir(parents=True,exist_ok=True)
+    if args.plots_only:
+        plots(pd.read_csv(out/'v2_pairs.csv'),pd.read_csv(out/'v2_sequences.csv'),pd.read_csv(out/'v2_summary.csv'),out)
+        print('Plots refreshed:',out); return
+    scaffold=tuple(map(int,args.scaffold_range.split(':'))) if args.scaffold_range else None
+    diagnostics=[]
+    pairs=discover_pairs(base/'baselines',scaffold,diagnostics)
+    pd.DataFrame(diagnostics).to_csv(out/'v2_pair_inventory.csv',index=False)
+    if not pairs:
+        raise SystemExit('No valid baseline pairs; inspect v2_pair_inventory.csv')
+    read,engine=trajectory_reader()
+    mapping=defaultdict(list); statuses=[]
+    for folder in sorted((base/'bioemu_baselines').iterdir()):
+        if not folder.is_dir() or folder.name.startswith('.') or 'checkpoint' in folder.name.lower():
+            continue
+        mr,mc,ms=REGIME.search(folder.name),CORE.search(folder.name),SOURCE.search(folder.name)
+        if not (mr and mc and ms):
+            statuses.append(dict(bioemu_folder=folder.name,status='UNPARSED_NAME')); continue
+        mapping[(mr.group(),mc.group(),ms.group(1).upper())].append(folder)
+    sequence_records=[]; frame_records=[]
+    for i,(key,folders) in enumerate(mapping.items(),1):
+        regime,core,source=key
+        folder=folders[0]
+        try:
+            if len(folders)!=1:
+                raise ValueError('Duplicate source folders; refuse best-of-many: '+','.join(f.name for f in folders))
+            pair=pairs[(regime,core)]
+            xyz=read(folder)
+            if xyz.shape!=(len(xyz),pair['length'],3) or not np.isfinite(xyz).all():
+                raise ValueError(f'CA count/coordinates mismatch: {xyz.shape}, target length {pair["length"]}')
+            raw,raw_error=raw_count(folder)
+            common={k:pair[k] for k in ('regime','task','mode','noise','core','length','backbone_rmsd_AB')}
+            common.update(bioemu_folder=folder.name,sequence_source=source,n_raw=raw,n_filtered=len(xyz),
+                          retained_fraction=len(xyz)/raw if raw>0 else np.nan,raw_count_error=raw_error,
+                          distinct=pair['backbone_rmsd_AB']>=args.distinct,
+                          minimum_fraction=args.min_fraction)
+            if raw > 0 and len(xyz) > raw:
+                common['retained_fraction'] = np.nan
+                common['raw_count_error'] = 'Filtered frames exceed raw count: inspect sampling/restarts'
+            if not len(xyz):
+                raise ValueError('EMPTY_FILTERED_ENSEMBLE: no valid samples; coverage is undefined')
+            ra=np.asarray([rmsd(x,pair['A']) for x in xyz]); rb=np.asarray([rmsd(x,pair['B']) for x in xyz])
+            for frame,(a,b) in enumerate(zip(ra,rb)):
+                frame_records.append(dict(bioemu_folder=folder.name,frame=frame,rmsd_A=a,rmsd_B=b))
+            for radius in (2.,3.):
+                row=dict(common,radius=radius,**memberships(ra,rb,radius,common['distinct'],args.min_fraction))
+                row['p_self']=row['p_near_'+source]; row['p_cross']=row['p_near_'+('B' if source=='A' else 'A')]
+                row['self_rmsd_median']=float(np.median(ra if source=='A' else rb))
+                sequence_records.append(row)
+            statuses.append(dict(bioemu_folder=folder.name,status='OK',n_filtered=len(xyz),n_raw=raw))
+        except Exception as exc:
+            statuses.append(dict(bioemu_folder=folder.name,status='ERROR',detail=str(exc)))
+        if i%100==0:
+            print(f'Processed {i}/{len(mapping)} ensembles',flush=True)
+    pd.DataFrame(statuses).to_csv(out/'v2_mapping_status.csv',index=False)
+    if not sequence_records:
+        raise SystemExit('No ensembles evaluated; see v2_mapping_status.csv')
+    seq_df=pd.DataFrame(sequence_records); seq_df.to_csv(out/'v2_sequences.csv',index=False)
+    pd.DataFrame(frame_records).to_csv(out/'v2_frame_distances.csv',index=False)
+    lookup={(r['regime'],r['core'],r['sequence_source'],r['radius']):r for r in sequence_records}
+    pair_df=aggregate(pairs,lookup,(2.,3.),args.distinct); pair_df.to_csv(out/'v2_pairs.csv',index=False)
+    summary=summaries(pair_df); summary.to_csv(out/'v2_summary.csv',index=False)
+    examples=pair_df[(pair_df['radius']==2)&pair_df['complete']].copy()
+    examples['category']=np.where(~examples['distinct'],'targets_not_distinct',
+        np.where(examples['best2_success']>0,'two_state_supported',
+            np.where((examples['seqA_p_self']>=args.min_fraction)|(examples['seqB_p_self']>=args.min_fraction),
+                     'distinct_but_only_one_state_supported','distinct_and_poor_own_target_coverage')))
+    examples=examples.sort_values(['noise','backbone_rmsd_AB']).groupby(['task','mode','category']).head(2)
+    examples.to_csv(out/'v2_representative_pairs.csv',index=False)
+    with (out/'v2_settings.json').open('w') as f:
+        json.dump(dict(trajectory_engine=engine,units='Angstrom',radii=[2,3],distinct=args.distinct,
+                       min_fraction=args.min_fraction,scaffold_range=scaffold,
+                       overlap='excluded from two-state support; included in own-target coverage',
+                       denominators='success rates: complete pairs; observed_success_yield: all valid generated pairs',
+                       uncertainty='Wilson for binary pair rates; pair bootstrap for one-attempt mean; one-attempt all-zero bootstrap can be degenerate',
+                       caveat='Support is not evidence of bimodality or experimental folding'),f,indent=2)
+    plots(pair_df,seq_df,summary,out)
+    print('Saved CSV, PNG/PDF and settings:',out)
+    print('Review inventory, mapping errors and evaluation_coverage before interpreting success rates.')
 
-    df_e = layer1(folders)
-    if MS_LIMIT > 0:
-        df_e = df_e.sample(min(MS_LIMIT, len(df_e)), random_state=0)
-    pdf = layer2(df_e)
 
-    model_pdf = None
-    if MODEL_PAIRS and Path(MODEL_PAIRS).exists():
-        model_pdf = pd.read_csv(MODEL_PAIRS)
-        model_pdf["bb_bucket"] = pd.cut(model_pdf.bb_rmsd_AB, bins=BB_EDGES, labels=BB_LABELS,
-                                        right=False, include_lowest=True)
-        print(f"[model] наложил кривую модели ({len(model_pdf)} пар)")
-
-    write_stats(df_e, pdf)
-    fig_a(df_e); fig_b(df_e); fig_c(df_e); fig_d(df_e)
-    ms_fig1(pdf); ms_fig2(pdf); ms_fig3(pdf, model_pdf); ms_fig4(pdf)
-    print("\nВСЁ. Таблички и фигуры в:", OUT)
-
-
-if __name__ == "__main__":
+if __name__=='__main__':
     main()
