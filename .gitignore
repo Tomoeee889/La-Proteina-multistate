@@ -11,6 +11,7 @@ logs/
 outputs/
 wandb/
 **.pdf
+!papers/**/*.pdf
 **.svg
 **.npy
 **.pkl
