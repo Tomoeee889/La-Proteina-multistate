@@ -5,3 +5,5 @@
 - [Ссылка для скачивания](https://www.microsoft.com/en-us/research/wp-content/uploads/2024/12/accepted_paper.pdf)
 
 Принятый рукописный вариант статьи Science, размещённый Microsoft Research.
+
+[Краткий конспект: архитектура, обучение, датасеты и ограничения](BioEmu.md).
