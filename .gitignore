@@ -1,83 +1,67 @@
+# Python and editor caches (tracked source files are preserved)
 __pycache__/
-
-lightning_logs
-
-.DS_Store
-
-.vscode/
-.env
-.logs/
-logs/
-outputs/
-wandb/
-**.pdf
-!papers/**/*.pdf
-**.svg
-**.npy
-**.pkl
-**.log
-**.ckpt
-**.pt
-**.ckpt
-*.fasta
-
-/checkpoints
-/tmp
-/tmp_ae
-/store
-/inference
-/ProteinMPNN/ca_model_weights/*.pt
-/ProteinMPNN/vanilla_model_weights/*.pt
-
-# BioEmu и временные файлы
-bioemu_ensembles*/
-best_pdbs*/
-top_designs*/
-top_full_ensembles*/
-*.xtc
-*.npz
-
-# Веса моделей и кэш
-checkpoints/
-*.ckpt
-*.pt
-*.pth
-.bioemu_embeds_cache/
-
-# Результаты (если слишком большие)
-*.csv
-
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.venv/
+venv/
 .vscode/
 .idea/
+.DS_Store
+Thumbs.db
 *.swp
 *.swo
 *~
 
-data/
-*.txt
-*.gz
-*.idx
-*.pdb
-*.fasta
-*.npz
+# Local credentials and environment overrides
+.env
+.env.*
+!.env.example
+!.env.template
+
+# Training logs and experiment outputs
+/lightning_logs/
+/.logs/
+/logs/
+/outputs/
+/wandb/
+/checkpoints/
+/store/
+/inference/
+/tmp/
+/tmp_ae/
+/tmp*/
+*.log
+*.out
+*.err
+
+# Generated baseline alignments, sequences and plots
+/baselines_msa/
+/mpnn_results_baselines/
+/baselines_laproteina/plots/
+# Keep the existing analysis configuration in bioemu_plots.
+/bioemu_plots/**/*.png
+/bioemu_plots/**/*.svg
+/bioemu_plots/**/*.pdf
+
+# Other generated BioEmu runs and selected ensembles
+/bioemu_ensembles*/
+/best_pdbs*/
+/top_designs*/
+/top_full_ensembles*/
+/top_ensembles*/
+/.bioemu_embeds_cache/
+
+# Runtime trajectory files
 *.xtc
+*.trr
+*.dcd
 
-# Результаты BioEmu
-bioemu_ensembles*/
-best_pdbs*/
-top_designs*/
-top_full_ensembles*/
-top_ensembles*/
-
-# Веса моделей
-checkpoints/
-*.ckpt
-*.pt
-*.pth
-
-# Кэш и временные файлы
-__pycache__/
-*.pyc
-.bioemu_embeds_cache/
-
-
+# Large downloaded model weights are local.
+# Rules are scoped: source examples, configs and papers are not hidden by extension.
+/ProteinMPNN/ca_model_weights/*.pt
+/ProteinMPNN/vanilla_model_weights/*.pt
+/ProteinMPNN/soluble_model_weights/*.pt
