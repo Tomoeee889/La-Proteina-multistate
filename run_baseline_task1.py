@@ -44,6 +44,7 @@ def load_model(cfg):
         ckpt_file,
         strict=False,
         autoencoder_ckpt_path=autoencoder_ckpt_path,
+        load_mlp_mixer=False,
     )
 
     # Disable MLP for baseline

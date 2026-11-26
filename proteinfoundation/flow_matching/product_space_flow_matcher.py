@@ -667,7 +667,7 @@ class ProductSpaceFlowMatcher(L.LightningModule):
         save_trajectory_every: int = 0,
         guidance_w: float = 1.0,
         ag_ratio: float = 0.0,
-        dual_path_alpha: float = 0.9,
+        dual_path_alpha: float = 0.0,
         init_noise_scale: float = 0.0,
         init_latent_A=None,
         init_latent_B=None,

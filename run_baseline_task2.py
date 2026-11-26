@@ -10,26 +10,6 @@ Usage (from la-proteina-main/ directory):
 import os
 import sys
 
-# Add mlp_model to path (needed by proteina.py)
-PROJECT_ROOT = os.getcwd()
-MLP_MODEL_PATH = os.path.join(PROJECT_ROOT, "mlp_model")
-if os.path.exists(MLP_MODEL_PATH):
-    sys.path.insert(0, PROJECT_ROOT)
-    import importlib.util
-    import types
-    mlp_dataset_pkg = types.ModuleType('mlp_model_dataset')
-    mlp_dataset_pkg.__path__ = [MLP_MODEL_PATH]
-    sys.modules['mlp_model_dataset'] = mlp_dataset_pkg
-    
-    spec = importlib.util.spec_from_file_location(
-        "mlp_model_dataset.mlp_mixer",
-        os.path.join(MLP_MODEL_PATH, "mlp_mixer.py")
-    )
-    if spec and spec.loader:
-        mlp_mixer_module = importlib.util.module_from_spec(spec)
-        sys.modules['mlp_model_dataset.mlp_mixer'] = mlp_mixer_module
-        spec.loader.exec_module(mlp_mixer_module)
-
 import argparse
 from collections import defaultdict
 from typing import List, Tuple
@@ -47,6 +27,7 @@ from proteinfoundation.proteina import Proteina
 from proteinfoundation.utils.pdb_utils import write_prot_to_pdb
 
 
+PROJECT_ROOT = os.getcwd()
 CONFIG_DIR = os.path.join(PROJECT_ROOT, "configs")
 
 
@@ -63,6 +44,7 @@ def load_model(cfg):
         ckpt_file,
         strict=False,
         autoencoder_ckpt_path=autoencoder_ckpt_path,
+        load_mlp_mixer=False,
     )
 
     model.configure_inference(

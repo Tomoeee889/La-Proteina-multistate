@@ -179,7 +179,7 @@ def load_ag_ckpt(cfg: Dict) -> Union[None, torch.nn.Module]:
         )
         ckpt_ag_file = cfg.ag_ckpt_path
         assert os.path.exists(ckpt_ag_file), f"Not a valid checkpoint {ckpt_ag_file}"
-        model_ag = Proteina.load_from_checkpoint(ckpt_ag_file, strict=False)
+        model_ag = Proteina.load_from_checkpoint(ckpt_ag_file, strict=False, load_mlp_mixer=False)
 
         # OPTIMIZATION: Remove encoder from autoguidance model autoencoder during generation (only decoder needed)
         if model_ag.autoencoder is not None:
@@ -199,38 +199,21 @@ def load_ckpt_n_configure_inference(cfg: Dict) -> Proteina:
     logger.info(f"Using checkpoint {ckpt_file}")
     assert os.path.exists(ckpt_file), f"Not a valid checkpoint {ckpt_file}"
 
-    model = Proteina.load_from_checkpoint(ckpt_file, strict=False, autoencoder_ckpt_path=cfg.get("autoencoder_ckpt_path", None))
-
-    nn_ag = load_ag_ckpt(cfg.generation.args)
-
-    # ← ДОБАВИТЬ БЛОК ЗАГРУЗКИ MLP
-    mlp_mixer = None
-    mlp_ckpt_path = cfg.get("mlp_ckpt_path", None)
-    if mlp_ckpt_path is not None and os.path.exists(mlp_ckpt_path):
-        import sys
-        sys.path.insert(0, os.path.dirname(mlp_ckpt_path))
-        from mlp_mixer import MLP_Mixer
-        
-        latent_dim = model.latent_dim
-        mlp_mixer = MLP_Mixer(latent_dim=latent_dim)
-        
-        ckpt = torch.load(mlp_ckpt_path, map_location="cpu")
-        state_dict = {
-            k.replace("mlp_mixer.", ""): v
-            for k, v in ckpt["state_dict"].items()
-            if k.startswith("mlp_mixer.")
-        }
-        mlp_mixer.load_state_dict(state_dict)
-        mlp_mixer.eval()
-        logger.info(f"Loaded MLP Mixer from {mlp_ckpt_path}")
-    else:
-        logger.info("No MLP Mixer checkpoint provided, running without it")
-    # ← КОНЕЦ БЛОКА
-
+    dual_path = cfg.generation.args.get("dual_path_alpha", 0.0) > 0.0
+    mixer_path = cfg.get("mlp_ckpt_path")
+    model = Proteina.load_from_checkpoint(
+        ckpt_file,
+        strict=False,
+        autoencoder_ckpt_path=cfg.get("autoencoder_ckpt_path"),
+        load_mlp_mixer=dual_path and not mixer_path,
+    )
+    mixer = model.mlp_mixer
+    if dual_path and mixer_path:
+        mixer = model.load_optional_mixer(mixer_path, model.latent_dim)
     model.configure_inference(
         inf_cfg=cfg.generation,
-        nn_ag=None,
-        mlp_mixer=model.mlp_mixer,  # уже загружен в __init__, просто передаём
+        nn_ag=load_ag_ckpt(cfg.generation.args),
+        mlp_mixer=mixer,
     )
 
     return model

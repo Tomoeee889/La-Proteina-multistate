@@ -1,8 +1,6 @@
 # General sampling params
 args:
   fold_cond: False     # not supported
-  dual_path_alpha: 0.9
-  mlp_t_threshold: 0.9
 
 # Sampling dataset
 dataset:

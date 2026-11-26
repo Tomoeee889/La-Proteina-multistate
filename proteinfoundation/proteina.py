@@ -1,6 +1,7 @@
 import os
 import random
 from functools import partial
+from importlib import import_module
 from typing import Dict, List, Literal, Tuple, Union
 
 import lightning as L
@@ -11,7 +12,6 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from loguru import logger
 from torch import Tensor
 from omegaconf import OmegaConf
-from mlp_model.mlp_mixer import MLP_Mixer
 
 from proteinfoundation.flow_matching.product_space_flow_matcher import (
     ProductSpaceFlowMatcher,
@@ -29,21 +29,6 @@ from proteinfoundation.utils.pdb_utils import (
     to_pdb,
 )
 
-import sys
-
-# Добавляем папку с mlp_mixer.py в путь поиска
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-mlp_path = os.path.join(project_root, "mlp_model_dataset")
-if mlp_path not in sys.path:
-    sys.path.insert(0, mlp_path)
-
-# Пытаемся импортировать
-try:
-    from mlp_mixer import MLP_Mixer
-    print("✅ MLP_Mixer class imported")
-except ImportError:
-    MLP_Mixer = None
-    print("⚠️ Warning: Could not import MLP_Mixer. Check mlp_model_dataset/mlp_mixer.py")
 
 @rank_zero_only
 def create_dir(dir):
@@ -52,7 +37,10 @@ def create_dir(dir):
 
 
 class Proteina(L.LightningModule):
-    def __init__(self, cfg_exp, store_dir=None, autoencoder_ckpt_path=None, mlp_mixer_ckpt_path=None, **kwargs):
+    def __init__(
+        self, cfg_exp, store_dir=None, autoencoder_ckpt_path=None,
+        mlp_mixer_ckpt_path=None, load_mlp_mixer=True, **kwargs,
+    ):
         super().__init__()
         self.save_hyperparameters()
         self.cfg_exp = cfg_exp
@@ -75,63 +63,19 @@ class Proteina(L.LightningModule):
             OmegaConf.set_struct(cfg_exp, True)
 
         self.autoencoder, latent_dim = self.load_autoencoder(cfg_exp, freeze_params=True)
-        self.autoencoder, latent_dim = self.load_autoencoder(cfg_exp, freeze_params=True)
-        
-        # 🔹 1. ОПРЕДЕЛЯЕМ ПУТЬ К ЧЕКПОИНТУ (ЭТОЙ СТРОКИ НЕ ХВАТАЛО!)
-        # Сначала проверяем аргумент функции, потом конфиг
-        target_mlp_path = mlp_mixer_ckpt_path
-        if target_mlp_path is None:
-            # OmegaConf или dict
-            target_mlp_path = getattr(cfg_exp, "mlp_mixer_ckpt_path", None)
-            if target_mlp_path is None and isinstance(cfg_exp, dict):
-                target_mlp_path = cfg_exp.get("mlp_mixer_ckpt_path")
 
-        # 🔹 2. ЗАГРУЗКА МОДЕЛИ
-        # Проверяем, что путь есть И что класс MLP_Mixer доступен (импортирован)
-        if target_mlp_path is not None and 'MLP_Mixer' in globals() and MLP_Mixer is not None:
-            print(f"🚀 Loading MLP Mixer from: {target_mlp_path}")
-            try:
-                # Инициализируем архитектуру
-                mlp_latent_dim = latent_dim if latent_dim is not None else cfg_exp.product_flowmatcher.local_latents.get("dim", 8)
-                self.mlp_mixer = MLP_Mixer(latent_dim=mlp_latent_dim)
-                
-                # Загружаем чекпоинт
-                ckpt = torch.load(target_mlp_path, map_location="cpu", weights_only=False)
-                
-                # Извлекаем state_dict
-                state_dict = ckpt['state_dict'] if 'state_dict' in ckpt else ckpt
-                
-                # Фильтруем ключи (убираем префикс 'mlp_mixer.')
-                mlp_state = {
-                    k.replace('mlp_mixer.', ''): v 
-                    for k, v in state_dict.items() 
-                    if k.startswith('mlp_mixer.')
-                }
-                
-                # Загружаем веса
-                self.mlp_mixer.load_state_dict(mlp_state, strict=False)
-                self.mlp_mixer.eval()
-                for p in self.mlp_mixer.parameters():
-                    p.requires_grad = False
-                print("✅ MLP Mixer loaded successfully!")
-            except Exception as e:
-                print(f"❌ Failed to load MLP Mixer: {e}")
-                import traceback
-                traceback.print_exc()
-                self.mlp_mixer = None
-        else:
-            self.mlp_mixer = None
-            if target_mlp_path is None:
-                print("ℹ️ MLP Mixer not loaded (path not provided).")
-            else:
-                print("ℹ️ MLP Mixer not loaded (class not found).")
-        
         # Add right latent dimensionality in the config file, needed to instantiate the flow matcher below
         if latent_dim is not None:
             self.latent_dim = latent_dim
         else:
             self.latent_dim = cfg_exp.product_flowmatcher.local_latents.get("dim", 8)
             
+        self.mlp_mixer = None
+        if load_mlp_mixer:
+            mixer_path = mlp_mixer_ckpt_path or cfg_exp.get("mlp_mixer_ckpt_path")
+            if mixer_path:
+                self.mlp_mixer = self.load_optional_mixer(mixer_path, self.latent_dim)
+
         if self.autoencoder is not None:
             try:
                 cfg_exp.product_flowmatcher.local_latents.dim = self.latent_dim
@@ -167,6 +111,27 @@ class Proteina(L.LightningModule):
         self.nparams = sum(p.numel() for p in self.nn.parameters() if p.requires_grad)
 
         self.nn_ag = None
+
+    @staticmethod
+    def load_optional_mixer(checkpoint_path, latent_dim):
+        # Archived experiments used these module names in different checkouts.
+        for name in ("mlp_model.mlp_mixer", "mlp_model_dataset.mlp_mixer", "mlp_mixer"):
+            try:
+                mixer_class = import_module(name).MLP_Mixer
+                break
+            except ModuleNotFoundError as exc:
+                if exc.name not in (name, name.split(".")[0]):
+                    raise
+        else:
+            raise ImportError("The requested mixer checkpoint requires the optional mlp_mixer module.")
+
+        mixer = mixer_class(latent_dim=latent_dim)
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        state = checkpoint.get("state_dict", checkpoint)
+        prefix = "mlp_mixer."
+        mixer_state = {key[len(prefix):]: value for key, value in state.items() if key.startswith(prefix)}
+        mixer.load_state_dict(mixer_state or state)
+        return mixer.requires_grad_(False).eval()
 
     @staticmethod
     def remap_pretrained_state_dict(state_dict, model_state_dict_keys=None):

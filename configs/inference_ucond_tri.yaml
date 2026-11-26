@@ -6,4 +6,3 @@ defaults:
 run_name_: laproteina_ucond_tri
 ckpt_name: LD2_ucond_tri_512.ckpt
 autoencoder_ckpt_path: ./checkpoints_laproteina/AE1_ucond_512.ckpt
-mlp_ckpt_path: /home/domain/aristowi/la-proteina-main/mlp_model_dataset/checkpoints/mlp_mixer/mlp-epoch=39-val/total_loss=4.8275.ckpt # ← добавить путь к 
